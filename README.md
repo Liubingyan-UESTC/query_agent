@@ -177,16 +177,30 @@ artifact.preview(max_rows=5)
 与 `validate_assignment=True`——未知字段被静默丢弃时，现象是「值莫名变成默认值」，
 排查成本远高于当场报错。
 
+## TaskSummary 与 Task
+
+`TaskSummary` 的字段集与需求文档一致，命名按开发计划 1.2 节修正：`related_task_ids`
+而不是 `related task`。`to_prompt_dict(fields)` 按白名单投影——意图识别阶段用
+`INTENT_PROMPT_FIELDS`（`content` + `status`），避免把尚未发生的 operations 或
+失败现场的 `output` 投喂给模型。空列表与未知字段名一律拒绝。
+
+`Task` 只做数据访问：`create()` 保证实体与摘要共享 `task_id` 且状态同为
+`CREATED`；`touch()` 刷新 `updated_at`；`record_status()` 同步实体状态、摘要状态
+与 `status_history`。**转移是否合法不在此处裁定**——`CREATED → COMPLETED` 在本层
+完全合法，规则留给步骤 19 的状态机。`error` 存 `AgentError.to_dict()`，以便
+`retryable` 随任务落盘。
+
+规范定义在 `agent/models/task.py`；`agent/task_manage/task.py` 只是兼容重导出。
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 5**：
-步骤 1「项目骨架」、步骤 2「配置中心」、步骤 3「异常体系与日志」、步骤 4「全局枚举」、
-步骤 5「消息与产物模型」已交付；步骤 6–8（TaskSummary 与 Task、ContextWindow、存储抽象）
-尚未开始，因此 M1 的里程碑成果中「Store 通过契约测试」一项目前还不具备。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 6**：
+步骤 1–6 已交付；步骤 7–8（ContextWindow、存储抽象）尚未开始，
+因此 M1 的里程碑成果中「Store 通过契约测试」一项目前还不具备。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（5/8） |
+| M1 基础设施 | 1 – 8 | 进行中（6/8） |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
