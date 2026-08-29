@@ -75,3 +75,12 @@ def test_config_layer_only_depends_on_common() -> None:
     foreign = {name for name in pulled if not name.startswith(allowed)}
 
     assert not foreign, f"agent.config 只应依赖 common，实际额外拉入：{sorted(foreign)}"
+
+
+def test_models_layer_only_depends_on_common_and_config() -> None:
+    """模型是纯数据层：一旦引用 store 或 manager，归档与状态机就无法独立测试。"""
+    pulled = _imported_agent_modules("agent.models")
+    allowed = ("agent.common", "agent.config", "agent.models")
+    foreign = {name for name in pulled if not name.startswith(allowed)}
+
+    assert not foreign, f"agent.models 只应依赖 common/config，实际额外拉入：{sorted(foreign)}"
