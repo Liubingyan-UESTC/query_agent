@@ -45,6 +45,7 @@
 | `Task.error: ?`（未规定形状） | `ErrorInfo{code, message, retryable, detail}` | 与 `AgentError.to_dict()` 键集合对齐。裸 `dict` 会让步骤 20/24/26 各写各的键名，`retryable` 悄然丢失 | 步骤 6 |
 | `Task.create` 未规定 `session_id` 是否可省 | `session_id` 必填 | 漏传若静默 `new_session_id()`，每个请求变成独立会话，WorkingMemory 失效且无报错 | 步骤 6 |
 | `Operation.index` 未规定与列表顺序的关系 | 必须从 0 按列表顺序连续递增 | `operation(index)` 按键查找，执行循环按列表遍历；乱序时两种解读结果不同 | 步骤 6 |
+| `Artifact` 无 scope | 增加 `scope` / `source_task_id`，默认 `CURRENT` | `split_by_scope()` 必须同时切开产物，否则注入的关联表会随当前任务重复归档。字段与 `Message` 对称，步骤 22 的 `inject_segment` 直接赋值 | 步骤 7 |
 
 #### 取值域严格性（2026-08-30 定稿）
 

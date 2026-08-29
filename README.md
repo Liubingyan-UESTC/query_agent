@@ -196,15 +196,26 @@ artifact.preview(max_rows=5)
 
 规范定义在 `agent/models/task.py`；`agent/task_manage/task.py` 只是兼容重导出。
 
+## Context Window
+
+`ContextWindow` 把 `summary`、`content`、`artifacts` 聚合成一块黑板，只提供容器操作：
+`append_message`、`get_messages`、`put_artifact`、`get_artifact`、`list_artifact_index`、
+`split_by_scope`。裁剪预算、写回 WorkingMemory 的策略不在这里。
+
+`split_by_scope()` 按 `Message.scope` / `Artifact.scope` 切开。写回只应取
+`CURRENT`；`RELATED`（关联任务注入）和 `HISTORY`（历史片段）参与推理但不归档，
+否则会话记忆会随轮次指数膨胀。`from_task(task)` 创建空窗口并复用同一份
+`summary` 对象。
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 6**：
-步骤 1–6 已交付；步骤 7–8（ContextWindow、存储抽象）尚未开始，
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 7**：
+步骤 1–7 已交付；步骤 8（存储抽象）尚未开始，
 因此 M1 的里程碑成果中「Store 通过契约测试」一项目前还不具备。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（6/8） |
+| M1 基础设施 | 1 – 8 | 进行中（7/8） |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
