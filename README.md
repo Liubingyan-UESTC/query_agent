@@ -50,6 +50,23 @@ mypy
 Web 服务（`python app/manage.py runserver`）与命令行交互脚本（`python scripts/run_cli.py`）
 分别在开发计划的步骤 26 与步骤 25 交付，当前尚未可用。
 
+## 配置
+
+全部可变参数集中声明在 `agent/config/settings.py`，业务代码只通过 `get_settings()` 读取，
+禁止直读 `os.environ`：
+
+```python
+from agent.config import get_settings
+
+settings = get_settings()                     # 进程级单例，启动时一次性确定
+settings.llm.model_for("intent")              # 按用途路由模型，未单独配置则回落主模型
+settings.context.token_budget()               # 按占比换算出的各部分 token 预算
+```
+
+环境变量命名为 `<组前缀>_<字段名>`，前缀与配置组一一对应：`APP_`、`LLM_`、`LLM_PRIMARY_`、
+`CONTEXT_`、`MEMORY_`、`TOOL_`、`TASK_`、`STORE_`、`ES_`、`TRACE_`；全部键名见 `.env.example`
+（有测试守护二者不漂移）。配置缺失或非法时抛出 `ConfigError`，错误信息直接指明环境变量名。
+
 ## 目录说明
 
 ```
@@ -85,13 +102,14 @@ common / config → models → store → { llm, memory_manage, tool_manage }
 
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前仅完成 M1（步骤 1–8）中的步骤 1「项目骨架与依赖管理」**，
-步骤 2–8（配置中心、异常与日志、全局枚举、数据模型、ContextWindow、存储抽象）尚未开始，
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 2**：
+步骤 1「项目骨架与依赖管理」、步骤 2「配置中心」已交付；
+步骤 3–8（异常与日志、全局枚举、数据模型、ContextWindow、存储抽象）尚未开始，
 因此 M1 的里程碑成果（模型可序列化往返、Store 通过契约测试）目前还不具备。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（1/8） |
+| M1 基础设施 | 1 – 8 | 进行中（2/8） |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
