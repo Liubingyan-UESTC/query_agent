@@ -22,7 +22,7 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
-from agent.common.enums import ArtifactType
+from agent.common.enums import ArtifactType, ContextScope
 from agent.common.ids import new_artifact_id
 from agent.models.base import AgentModel
 
@@ -69,6 +69,8 @@ class Artifact(AgentModel):
     # 总数，不是 len(data)。分页/截断后二者可以不相等，赋值 data 不会回写本字段
     row_count: int | None = None
     size_bytes: int | None = None
+    scope: ContextScope = ContextScope.CURRENT
+    source_task_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     meta: dict[str, Any] = Field(default_factory=dict)
 
