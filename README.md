@@ -88,6 +88,25 @@ with log_context(trace_id=new_trace_id(), task_id="task_..."):
 asyncio 任务，适配后续的 SSE 流式接口。记录 `AgentError` 时，`code` 与 `retryable`
 会一并落进日志，排查时无需回查代码即可判断任务为何走了重试分支。
 
+## 枚举取值域
+
+`agent/common/enums.py` 固化 `TaskStatus`、`IntentType`、`MessageRole`、`ArtifactType`、
+`OperationStatus`、`ContextScope` 六个取值域。全部继承 `StrEnum`，成员值即小写字符串，
+可直接 `json.dumps`，且 `TaskStatus.CREATED == "created"` 成立：
+
+```python
+from agent.common import IntentType
+
+IntentType("NEW-QUERY")                                  # 大小写、连字符、驼峰均可
+IntentType.from_str("analisis")                          # 别名表吸收 v0 笔误与模型输出变体
+IntentType.from_str(raw, default=IntentType.UNKNOWN)     # 不可信输入的兜底解析
+IntentType.values()                                      # 供 JSON Schema 的 enum 约束
+```
+
+取值域的输入来自 LLM 输出与 HTTP 请求体，二者都不可信，故 `_missing_` 钩子统一做
+大小写、分隔符、驼峰归一后再查别名表——因此连 `Cls(raw)` 直接构造也具备容错能力，
+不依赖调用方记得改用 `from_str`。旧的 `agent/task_manage/type.py` 保留为兼容重导出层。
+
 ## 目录说明
 
 ```
@@ -123,14 +142,14 @@ common / config → models → store → { llm, memory_manage, tool_manage }
 
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 3**：
-步骤 1「项目骨架与依赖管理」、步骤 2「配置中心」、步骤 3「异常体系与日志」已交付；
-步骤 4–8（全局枚举、数据模型、ContextWindow、存储抽象）尚未开始，
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 4**：
+步骤 1「项目骨架」、步骤 2「配置中心」、步骤 3「异常体系与日志」、步骤 4「全局枚举」已交付；
+步骤 5–8（消息与产物模型、TaskSummary 与 Task、ContextWindow、存储抽象）尚未开始，
 因此 M1 的里程碑成果（模型可序列化往返、Store 通过契约测试）目前还不具备。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（3/8） |
+| M1 基础设施 | 1 – 8 | 进行中（4/8） |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |

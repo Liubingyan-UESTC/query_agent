@@ -4,6 +4,17 @@
 因此可被任意模块安全导入而不会形成环。
 """
 
+from agent.common.enums import (
+    ACTIVE_TASK_STATUSES,
+    TERMINAL_TASK_STATUSES,
+    AgentEnum,
+    ArtifactType,
+    ContextScope,
+    IntentType,
+    MessageRole,
+    OperationStatus,
+    TaskStatus,
+)
 from agent.common.errors import (
     AgentError,
     AgentMemoryError,
@@ -37,16 +48,25 @@ from agent.common.logging import (
 )
 
 __all__ = [
+    "ACTIVE_TASK_STATUSES",
+    "TERMINAL_TASK_STATUSES",
+    "AgentEnum",
     "AgentError",
     "AgentMemoryError",
+    "ArtifactType",
     "ConfigError",
     "ContextError",
+    "ContextScope",
+    "IntentType",
     "LLMError",
     "LLMRateLimitError",
     "LLMResponseFormatError",
     "LLMTimeoutError",
+    "MessageRole",
+    "OperationStatus",
     "TaskCanceledError",
     "TaskStateError",
+    "TaskStatus",
     "ToolError",
     "ToolInvocationError",
     "ToolNotFoundError",
