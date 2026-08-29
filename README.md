@@ -41,9 +41,10 @@ copy .env.example .env          # Windows
 # cp .env.example .env          # Linux / macOS
 # 编辑 .env 填入 LLM_PRIMARY_API_KEY 等必填项；本地无密钥时可设 LLM_USE_MOCK=true
 
-# 4. 运行测试与静态检查
+# 4. 运行测试与静态检查（四项须全绿）
 pytest
 ruff check .
+ruff format --check .           # 亦覆盖 README 内的 python 代码块
 mypy
 ```
 
@@ -97,15 +98,20 @@ asyncio 任务，适配后续的 SSE 流式接口。记录 `AgentError` 时，`c
 ```python
 from agent.common import IntentType
 
-IntentType("NEW-QUERY")                                  # 大小写、连字符、驼峰均可
-IntentType.from_str("analisis")                          # 别名表吸收 v0 笔误与模型输出变体
-IntentType.from_str(raw, default=IntentType.UNKNOWN)     # 不可信输入的兜底解析
-IntentType.values()                                      # 供 JSON Schema 的 enum 约束
+IntentType("new_query")  # 只认规范拼写
+IntentType.values()  # 供 JSON Schema 的 enum 约束
+IntentType.from_str(raw)  # 解析失败抛 ValueError，消息内含合法取值列表
+IntentType.from_str(raw, default=IntentType.UNKNOWN)  # 调用方显式选择的兜底
 ```
 
-取值域的输入来自 LLM 输出与 HTTP 请求体，二者都不可信，故 `_missing_` 钩子统一做
-大小写、分隔符、驼峰归一后再查别名表——因此连 `Cls(raw)` 直接构造也具备容错能力，
-不依赖调用方记得改用 `from_str`。旧的 `agent/task_manage/type.py` 保留为兼容重导出层。
+取值域是**严格**的：`IntentType("NEW-QUERY")`、`IntentType("newQuery")`、
+`IntentType("analisis")` 全部抛 `ValueError`。不做归一化、不设别名表是有意为之——
+把错误拼写猜成正确成员会掩盖真正的缺陷（提示词写错、前端传错字段、模型不遵守
+schema），而猜测规则本身会长期膨胀并需要维护。
+
+约束模型输出的正确位置是产出端：用 `values()` 生成 JSON Schema 的 enum 约束。
+解析失败时的 `ValueError` 已带合法取值列表，可直接回灌重试提示词。
+旧的 `agent/task_manage/type.py` 保留为兼容重导出层，只提供 `TaskType` 类别名。
 
 ## 目录说明
 
@@ -140,16 +146,47 @@ common / config → models → store → { llm, memory_manage, tool_manage }
 其余需在 Code Review 中守护的关键不变式（黑板单一写入通道、大数据不入对话、注入内容不归档、
 状态转移唯一裁判等）见 [`docs/dev_plan.md`](docs/dev_plan.md) 第四节。
 
+## 消息与产物模型
+
+`agent/models/` 是纯数据层，只依赖 `common` / `config`，不含任何业务策略。
+
+`Message` 同时承载协议字段与编排字段，二者读者不同，故分两个出口：`to_llm_dict()`
+只输出 OpenAI messages 规范允许的键（`role` / `content` / `name` / `tool_calls` /
+`tool_call_id`），而 `message_id`、`artifact_refs`、`scope`、`source_task_id`、
+`created_at`、`meta` 只服务于 ContextManager，绝不进入发给模型的载荷——否则既浪费
+token，又会诱导模型模仿这些字段作答。
+
+`Artifact` 存在的理由是隔离体积。一次 ES 查询可能回来上万行，若直接进 `task_content`，
+上下文窗口会被单次结果打满且每轮都要重投一遍。因此全量数据留在 `data`（或
+`storage_ref` 指向的外部存储），进入提示词的只有 `artifact_id` 与 `preview()` 摘要：
+
+```python
+artifact.preview(max_rows=5)
+# [table] 查询结果 (artifact_id=art_...) 共 200000 行
+# col0 | col1 | col2
+# r0c0 | r0c1 | r0c2
+# ...
+# （另有 199995 行未显示，凭 artifact_id 可取全量）
+```
+
+`preview()` 在行数、单元格宽度、总字符数三个维度都设了硬上限，否则上述约定形同虚设：
+20 万行、3 列的表格摘要实测 217 字符；500 列的极端表格会被总字符上限截断在 1200 字符。
+
+两个模型都继承 `AgentModel`，统一提供 `to_dict()`（`mode="json"`，datetime 与枚举
+已转为字符串，可直接 `json.dumps`）与 `from_dict()`，并统一开启 `extra="forbid"`
+与 `validate_assignment=True`——未知字段被静默丢弃时，现象是「值莫名变成默认值」，
+排查成本远高于当场报错。
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 4**：
-步骤 1「项目骨架」、步骤 2「配置中心」、步骤 3「异常体系与日志」、步骤 4「全局枚举」已交付；
-步骤 5–8（消息与产物模型、TaskSummary 与 Task、ContextWindow、存储抽象）尚未开始，
-因此 M1 的里程碑成果（模型可序列化往返、Store 通过契约测试）目前还不具备。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 5**：
+步骤 1「项目骨架」、步骤 2「配置中心」、步骤 3「异常体系与日志」、步骤 4「全局枚举」、
+步骤 5「消息与产物模型」已交付；步骤 6–8（TaskSummary 与 Task、ContextWindow、存储抽象）
+尚未开始，因此 M1 的里程碑成果中「Store 通过契约测试」一项目前还不具备。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（4/8） |
+| M1 基础设施 | 1 – 8 | 进行中（5/8） |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |

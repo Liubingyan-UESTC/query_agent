@@ -26,6 +26,34 @@
 - `related task` → `related_task_ids`（对外 JSON 同时接受/输出 `related_task_ids`）
 - 枚举沿用已有 `agent/task_manage/type.py` 的 `TaskStatus.INTENDING` 拼写
 - 所有字段 snake_case，所有枚举值序列化为小写字符串
+- ID 前缀须为纯小写字母（`new_id()` 强校验）：含下划线会破坏 `<前缀>_<时间戳>_<随机>` 的三段式切分
+
+#### 实现期偏离记录
+
+以下为实现过程中相对本计划原文的偏离，**后续步骤请以本表为准**，按原文书写会引用到不存在的符号。
+
+| 计划原文 | 实际实现 | 偏离原因 | 落地于 |
+| --- | --- | --- | --- |
+| `MemoryError` | `AgentMemoryError` | 原名遮蔽 Python 内置 `MemoryError`，会使 `except MemoryError` 的语义随导入顺序漂移。已启用 ruff `A` 规则在 CI 拦截同类遮蔽 | 步骤 3 |
+| 各枚举独立定义 | 统一继承新增的 `AgentEnum(StrEnum)` 基类 | 基类集中提供 `from_str()` 与 `values()`，供 LLM 输出与 HTTP 入参的解析端复用 | 步骤 4 |
+| （无） | 新增 `TERMINAL_TASK_STATUSES` / `ACTIVE_TASK_STATUSES` / `FINISHED_OPERATION_STATUSES` 三个 `frozenset` 常量 | 状态机与轮询接口都需判断「是否终态」，若各处自行罗列状态，新增状态时必然漏改 | 步骤 4 |
+| `type.py` 保留 v0 成员名以「避免破坏已有引用」 | 仅保留 `TaskType` 类别名，**不保留 v0 成员属性**：`TaskType.NEWQUERY` 抛 `AttributeError` | 与 1.2 节「修正笔误」直接冲突，取修正拼写：当前仓库无任何 v0 引用，且 mypy 会静态报出 `"type[IntentType]" has no attribute "NEWQUERY"` | 步骤 4 |
+| `Artifact.schema` | `Artifact.data_schema` | `schema` 会遮蔽 `pydantic.BaseModel` 上已废弃的同名方法并触发 `UserWarning`。内外统一用 `data_schema`，不设 alias——该字段尚未成为对外契约，无需背兼容包袱 | 步骤 5 |
+| 各模型自备 `to_dict()` / `from_dict()` | 统一继承新增的 `AgentModel(BaseModel)` 基类 | 步骤 5–7 的五个模型都要在 Store 中序列化往返，逐个手写必然风格分叉。基类同时统一了 `extra="forbid"` 与 `validate_assignment=True` | 步骤 5 |
+
+#### 取值域严格性（2026-08-30 定稿）
+
+枚举**只接受规范拼写**。大小写变体、连字符与驼峰写法、同义词、笔误一律抛 `ValueError`，
+不做归一化、不设别名表。理由：把错误拼写猜成正确成员会掩盖真正的缺陷——提示词写错、
+前端传错字段、模型不遵守 schema——而猜测规则本身会长期膨胀且需要维护。
+
+因此约束模型输出的正确位置在**产出端**而非解析端：用 `Cls.values()` 生成
+JSON Schema 的 enum 约束（步骤 15 提示词装配、步骤 9 LLM 结构化输出）。
+解析失败时 `from_str()` 抛出的 `ValueError` 已带合法取值列表，可直接回灌重试提示词。
+仅当调用方明确需要兜底时才传 `default=`（如 `IntentType.from_str(raw, default=IntentType.UNKNOWN)`），
+这是显式选择，与猜测拼写是两回事。
+
+正确写法速查：`IntentType.NEW_QUERY` / `IntentType.ANALYSIS` / `IntentType.UNKNOWN`。
 
 ### 1.3 目标目录结构（最终形态）
 
