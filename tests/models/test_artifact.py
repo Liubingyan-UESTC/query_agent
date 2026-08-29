@@ -278,7 +278,7 @@ def test_row_count_is_derived_from_list_data() -> None:
 
 
 def test_explicit_row_count_survives_paging() -> None:
-    """`data` 只是一页时，调用方给的总数不能被页长覆盖。"""
+    """`data` 是当前页、`row_count` 是总数，二者不保证相等。"""
     artifact = Artifact(
         task_id="task_1",
         producer="t",
@@ -289,6 +289,16 @@ def test_explicit_row_count_survives_paging() -> None:
 
     assert artifact.row_count == 9999
     assert "共 9999 行" in artifact.preview()
+
+
+def test_assigning_data_does_not_rewrite_row_count() -> None:
+    """赋值 data 后保持原总数，避免截断页被误报成全量。"""
+    artifact = make_table(10)
+
+    artifact.data = [{"col0": "x"}]
+
+    assert artifact.row_count == 10
+    assert "共 10 行" in artifact.preview()
 
 
 def test_row_count_stays_none_for_scalar_data() -> None:

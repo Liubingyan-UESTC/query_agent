@@ -116,13 +116,21 @@ def test_operation_defaults_to_pending_with_empty_args() -> None:
     assert op.error is None
 
 
-def test_operation_indices_must_be_unique() -> None:
-    with pytest.raises(ValidationError, match="唯一"):
+@pytest.mark.parametrize(
+    "indices",
+    [
+        [0, 0],
+        [2, 0],
+        [0, 2],
+        [1, 2],
+        [0, 1, 3],
+    ],
+)
+def test_operation_indices_must_be_contiguous_from_zero(indices: list[int]) -> None:
+    """查找按 index、执行按列表顺序，乱序或空洞会使两种解读跑出不同结果。"""
+    with pytest.raises(ValidationError, match="连续递增"):
         make_summary(
-            operations=[
-                Operation(index=0, name="a", tool="t"),
-                Operation(index=0, name="b", tool="t"),
-            ]
+            operations=[Operation(index=index, name=f"s{index}", tool="t") for index in indices]
         )
 
 
@@ -131,12 +139,13 @@ def test_operation_index_must_be_non_negative() -> None:
         Operation(index=-1, name="a", tool="t")
 
 
-def test_operation_lookup_by_index() -> None:
+def test_operation_lookup_by_index_is_the_list_position() -> None:
     first = Operation(index=0, name="查询", tool="kibana_query")
-    second = Operation(index=2, name="导出", tool="export_tool")
+    second = Operation(index=1, name="导出", tool="export_tool")
     summary = make_summary(operations=[first, second])
 
-    assert summary.operation(2) is second
+    assert summary.operation(1) is second
+    assert summary.operation(1) is summary.operations[1]
 
 
 def test_missing_operation_raises_key_error() -> None:

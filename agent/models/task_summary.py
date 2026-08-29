@@ -56,16 +56,23 @@ class TaskSummary(AgentModel):
     related_task_ids: list[str] = Field(default_factory=list)
     operations: list[Operation] = Field(default_factory=list)
     result: str | None = None
-    status: TaskStatus = TaskStatus.CREATED
+    # 冻结：改状态必须走 Task.record_status()，否则会与 Task.status / history 撕裂
+    status: TaskStatus = Field(default=TaskStatus.CREATED, frozen=True)
     output: str | None = None
 
     @field_validator("operations")
     @classmethod
-    def _operation_indices_are_unique(cls, value: list[Operation]) -> list[Operation]:
-        """重复 index 会让执行循环无法判断下一步该跑哪条。"""
-        indices = [item.index for item in value]
-        if len(indices) != len(set(indices)):
-            raise ValueError(f"operations 的 index 必须唯一，实际为 {indices}")
+    def _operation_indices_are_contiguous(cls, value: list[Operation]) -> list[Operation]:
+        """index 必须从 0 按列表顺序连续递增。
+
+        `operation(index)` 按键查找，步骤 23 的执行循环按列表顺序遍历。
+        若只校验唯一性，LLM 规划输出 `[2, 0]` 时两种解读会跑出不同结果。
+        规划阶段本就该产出有序步骤，乱序在入口拦下，执行循环无需再排序。
+        """
+        expected = list(range(len(value)))
+        actual = [item.index for item in value]
+        if actual != expected:
+            raise ValueError(f"operations 的 index 必须从 0 连续递增，实际为 {actual}")
         return value
 
     def to_prompt_dict(self, fields: Sequence[str]) -> dict[str, Any]:
@@ -84,8 +91,7 @@ class TaskSummary(AgentModel):
         return {name: payload[name] for name in fields}
 
     def operation(self, index: int) -> Operation:
-        """按 index 取步骤。找不到时抛 `KeyError`，与 dict 访问语义一致。"""
-        for item in self.operations:
-            if item.index == index:
-                return item
-        raise KeyError(f"summary {self.task_id} 没有 index={index} 的 operation")
+        """按 index 取步骤。index 即列表下标（构造时已校验从 0 连续递增）。"""
+        if not 0 <= index < len(self.operations):
+            raise KeyError(f"summary {self.task_id} 没有 index={index} 的 operation")
+        return self.operations[index]

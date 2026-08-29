@@ -10,6 +10,7 @@ from agent.models.artifact import (
     Artifact,
 )
 from agent.models.base import AgentModel
+from agent.models.error import ErrorInfo
 from agent.models.message import Message, ToolCall
 from agent.models.task import StatusRecord, Task
 from agent.models.task_summary import INTENT_PROMPT_FIELDS, Operation, TaskSummary
@@ -21,6 +22,7 @@ __all__ = [
     "INTENT_PROMPT_FIELDS",
     "AgentModel",
     "Artifact",
+    "ErrorInfo",
     "Message",
     "Operation",
     "StatusRecord",

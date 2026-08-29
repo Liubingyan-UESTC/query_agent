@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from agent.common.enums import TaskStatus
 from agent.common.errors import AgentError
+from agent.models.error import ErrorInfo
 from agent.models.task import StatusRecord, Task
 from agent.models.task_summary import TaskSummary
 
@@ -25,10 +26,10 @@ def test_create_aligns_ids_and_seeds_history() -> None:
     assert [record.status for record in task.status_history] == [TaskStatus.CREATED]
 
 
-def test_create_generates_a_session_id_when_omitted() -> None:
-    task = Task.create("q")
-
-    assert task.session_id.startswith("sess_")
+def test_create_requires_session_id() -> None:
+    """漏传会让每个请求变成独立会话，WorkingMemory 静默失效。"""
+    with pytest.raises(TypeError):
+        Task.create("q")  # type: ignore[call-arg]
 
 
 def test_mismatched_task_id_is_rejected() -> None:
@@ -38,6 +39,38 @@ def test_mismatched_task_id_is_rejected() -> None:
             session_id="sess_1",
             summary=TaskSummary(task_id="task_b", content="q"),
         )
+
+
+def test_mismatched_status_is_rejected_at_construction() -> None:
+    with pytest.raises(ValidationError, match="record_status"):
+        Task(
+            task_id="task_x",
+            session_id="sess_1",
+            status=TaskStatus.CREATED,
+            summary=TaskSummary(task_id="task_x", content="q", status=TaskStatus.PLANNING),
+        )
+
+
+def test_direct_status_assignment_is_rejected() -> None:
+    """绕过 record_status 会让摘要与历史停在旧值，前端读的是 summary。"""
+    task = Task.create("q", session_id="sess_1")
+
+    with pytest.raises(ValueError, match="record_status"):
+        task.status = TaskStatus.PLANNING
+
+    assert task.status is TaskStatus.CREATED
+    assert task.summary.status is TaskStatus.CREATED
+    assert [record.status for record in task.status_history] == [TaskStatus.CREATED]
+
+
+def test_direct_summary_status_assignment_is_rejected() -> None:
+    """另一侧的撕裂口：只改 summary.status，实体与历史不会跟上。"""
+    task = Task.create("q", session_id="sess_1")
+
+    with pytest.raises(ValidationError):
+        task.summary.status = TaskStatus.PLANNING
+
+    assert task.summary.status is TaskStatus.CREATED
 
 
 # ============================================================ record_status / touch
@@ -105,7 +138,7 @@ def test_touch_is_observable_across_a_clock_tick() -> None:
 def test_json_round_trip_is_lossless() -> None:
     task = Task.create("查昨天的错误日志", session_id="sess_1")
     task.record_status(TaskStatus.FAILED, note="工具超时")
-    task.error = AgentError("kibana 超时", code="tool_timeout", retryable=True).to_dict()
+    task.error = AgentError("kibana 超时", code="tool_timeout", retryable=True)
     task.retry_count = 1
 
     restored = Task.from_dict(json.loads(json.dumps(task.to_dict())))
@@ -125,10 +158,48 @@ def test_to_dict_is_directly_json_serializable() -> None:
 def test_error_stores_the_structured_agent_error() -> None:
     """retryable 必须随任务一起落盘，否则步骤 19 无法决定 RETRYING 还是 FAILED。"""
     task = Task.create("q", session_id="sess_1")
-    task.error = AgentError("限流", code="llm_rate_limit", retryable=True).to_dict()
+    task.error = AgentError("限流", code="llm_rate_limit", retryable=True)
 
-    assert task.error["retryable"] is True
-    assert task.to_dict()["error"]["code"] == "llm_rate_limit"
+    assert isinstance(task.error, ErrorInfo)
+    assert task.error.retryable is True
+    assert task.to_dict()["error"] == {
+        "code": "llm_rate_limit",
+        "message": "限流",
+        "retryable": True,
+        "detail": None,
+    }
+
+
+def test_error_info_keys_match_agent_error_to_dict() -> None:
+    """两边字段表必须同一份，否则 HTTP 响应与落盘会各写各的键。"""
+    payload = AgentError("m", detail="d").to_dict()
+
+    assert set(ErrorInfo.model_fields) == set(payload)
+    assert ErrorInfo.from_error(AgentError("m", detail="d")).to_dict() == payload
+
+
+def test_error_rejects_unknown_keys() -> None:
+    task = Task.create("q", session_id="sess_1")
+
+    with pytest.raises(ValidationError):
+        task.error = {"code": "x", "message": "m", "retryable": False, "extra": 1}
+
+
+def test_error_accepts_error_info_instance() -> None:
+    info = ErrorInfo(code="x", message="m")
+    task = Task.create("q", session_id="sess_1")
+
+    task.error = info
+
+    assert task.error is info
+    assert ErrorInfo.coerce(info) is info
+
+
+def test_error_rejects_non_structured_values() -> None:
+    task = Task.create("q", session_id="sess_1")
+
+    with pytest.raises(ValidationError):
+        task.error = 123
 
 
 def test_negative_retry_count_is_rejected() -> None:
@@ -141,7 +212,7 @@ def test_negative_retry_count_is_rejected() -> None:
 def test_assignment_is_validated() -> None:
     task = Task.create("q", session_id="sess_1")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError, match="record_status"):
         task.status = "intenting"
 
 

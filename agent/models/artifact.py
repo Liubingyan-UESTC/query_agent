@@ -9,6 +9,12 @@
 
 `preview()` 的输出长度必须有上界，否则上一条约定就形同虚设——所以行数、单元格宽度、
 总字符数三个维度都设了硬上限。
+
+`data` 与 `row_count` 是分页语义，二者不保证相等，赋值 `data` 后也不会回写
+`row_count`：`data` 是当前页（或截断后的子集），`row_count` 是调用方声明的总数。
+步骤 17/18 做 `max_result_rows` 截断时必须显式传入总数，不能按 `len(data)` 理解。
+只在构造时未给 `row_count` 且 `data` 为列表的情况下，才用页长补全——那表示「这一页
+就是全部」。
 """
 
 from datetime import UTC, datetime
@@ -60,6 +66,7 @@ class Artifact(AgentModel):
     data_schema: dict[str, Any] = Field(default_factory=dict)
     data: Any = None
     storage_ref: str | None = None
+    # 总数，不是 len(data)。分页/截断后二者可以不相等，赋值 data 不会回写本字段
     row_count: int | None = None
     size_bytes: int | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
