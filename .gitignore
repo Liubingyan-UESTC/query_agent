@@ -1,0 +1,96 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===== 虚拟环境 =====
+venv/
+env/
+ENV/
+.venv/
+.env/
+.env.*
+!.env.example
+
+# ===== Django =====
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+.env
+*.pyc
+__pycache__/
+
+# ===== 环境变量 / 密钥 =====
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.key
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== DevContainer =====
+# .devcontainer/ 需要随仓库分发以保证开发环境一致（Python 3.11），故纳入版本管理。
+# 其中不得出现任何密钥：敏感值一律通过 ${localEnv:VAR} 从宿主机环境读取。
+# 个人私有覆盖配置放到 *.local.json，不提交。
+.devcontainer/**/*.local.json
+
+# ===== 测试 / 覆盖率 / 工具缓存 =====
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ===== 日志 =====
+*.log
+logs/
+log/
+
+# ===== 临时文件 =====
+*.tmp
+*.bak
+*.swp
+*~
+
+# ===== Node (若前端使用) =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*

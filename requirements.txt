@@ -1,0 +1,25 @@
+# Query Agent 依赖清单（版本锁定于 2026-08-29 安装时的最新稳定版）
+# 安装：pip install -r requirements.txt
+# 仅锁定直接依赖，间接依赖由解析器决定。
+
+# ---------- 网络服务 ----------
+django==6.1
+
+# ---------- LLM ----------
+openai==3.6.0
+tenacity==9.1.4
+
+# ---------- 配置与数据模型 ----------
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+
+# ---------- 数据源与数据处理 ----------
+elasticsearch==9.5.0
+pandas==3.0.5
+
+# ---------- 开发与质量门禁 ----------
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.16.5
+mypy==2.3.1
