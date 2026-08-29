@@ -58,9 +58,9 @@ Web 服务（`python app/manage.py runserver`）与命令行交互脚本（`pyth
 ```python
 from agent.config import get_settings
 
-settings = get_settings()                     # 进程级单例，启动时一次性确定
-settings.llm.model_for("intent")              # 按用途路由模型，未单独配置则回落主模型
-settings.context.token_budget()               # 按占比换算出的各部分 token 预算
+settings = get_settings()  # 进程级单例，启动时一次性确定
+settings.llm.model_for("intent")  # 按用途路由模型，未单独配置则回落主模型
+settings.context.token_budget()  # 按占比换算出的各部分 token 预算
 ```
 
 环境变量命名为 `<组前缀>_<字段名>`，前缀与配置组一一对应：`APP_`、`LLM_`、`LLM_PRIMARY_`、

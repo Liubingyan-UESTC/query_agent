@@ -479,6 +479,27 @@ def _env_example_keys() -> set[str]:
     return keys
 
 
+def test_env_example_is_loadable_as_is(env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """.env.example 原样复制为 .env 后必须能加载。
+
+    守护两件事：示例值本身合法（如预算占比之和为 1、JSON 可解析），
+    以及行尾注释被正确剥离——否则 `APP_ENV=dev  # dev | test | prod` 会连注释一起读入。
+    """
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # 示例文件按设计留空了 API Key，此处以 Mock 模式绕过该项必填校验
+    env.setenv("LLM_USE_MOCK", "true")
+    settings = load_settings(env_file=env_file)
+
+    assert settings.env == "dev"
+    assert settings.log_level == "INFO"
+    assert settings.store.backend == "memory"
+    assert settings.es.hosts == ["http://localhost:9200"]
+    assert settings.trace.dir == Path("logs/traces")
+    assert sum(settings.context.token_budget().values()) == settings.context.max_total_tokens
+
+
 def test_env_example_matches_settings_fields() -> None:
     """配置类与 .env.example 双向对齐，避免新增配置项忘记登记。"""
     expected = _expected_env_keys()
