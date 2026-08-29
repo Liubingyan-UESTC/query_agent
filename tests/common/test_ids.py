@@ -7,11 +7,13 @@ import pytest
 from agent.common.ids import (
     ARTIFACT_ID_PREFIX,
     ID_PATTERN,
+    MESSAGE_ID_PREFIX,
     SESSION_ID_PREFIX,
     TASK_ID_PREFIX,
     TRACE_ID_PREFIX,
     new_artifact_id,
     new_id,
+    new_message_id,
     new_session_id,
     new_task_id,
     new_trace_id,
@@ -22,6 +24,7 @@ GENERATORS = [
     (new_session_id, SESSION_ID_PREFIX),
     (new_artifact_id, ARTIFACT_ID_PREFIX),
     (new_trace_id, TRACE_ID_PREFIX),
+    (new_message_id, MESSAGE_ID_PREFIX),
 ]
 
 
@@ -81,6 +84,28 @@ def test_new_id_accepts_a_custom_prefix() -> None:
 
     assert value.startswith("op_")
     assert ID_PATTERN.match(value) is not None
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        pytest.param("task_v2", id="下划线破坏三段式切分"),
+        pytest.param("Task", id="大写导致同一实体两种写法"),
+        pytest.param("task2", id="数字与时间戳段混淆"),
+        pytest.param("", id="空前缀"),
+        pytest.param("task-v2", id="连字符不在 ID_PATTERN 字符集内"),
+    ],
+)
+def test_new_id_rejects_prefixes_that_break_the_pattern(prefix: str) -> None:
+    """非法前缀必须当场报错，而非产出一个 ID_PATTERN 解析不了的 ID。"""
+    with pytest.raises(ValueError, match="ID 前缀"):
+        new_id(prefix)
+
+
+def test_all_builtin_prefixes_are_themselves_valid() -> None:
+    """守护住内置前缀常量本身不违反校验规则。"""
+    for _, prefix in GENERATORS:
+        assert ID_PATTERN.match(new_id(prefix)) is not None
 
 
 def test_random_segment_disambiguates_ids_within_one_millisecond() -> None:

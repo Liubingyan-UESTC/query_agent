@@ -4,9 +4,9 @@
 仅为不破坏既有 `from agent.task_manage.type import ...` 的引用。新代码请直接从
 `agent.common.enums` 导入。
 
-与 v0 的差异：`TaskType` 现为 `IntentType` 的别名，成员由 `NEWQUERY / ANALISIS`
-更正为 `NEW_QUERY / ANALYSIS` 并新增 `UNKNOWN`。旧成员名不再作为属性提供，但旧的
-字符串写法仍能被 `IntentType.from_str()` 正确解析（别名表已收录）。
+`TaskType` 是 `IntentType` 的类别名。v0 的成员拼写（`NEWQUERY`、`ANALISIS`）是笔误，
+已按开发计划 1.2 节更正为 `NEW_QUERY`、`ANALYSIS`，且不保留任何形式的兼容：
+`TaskType.NEWQUERY` 会抛 `AttributeError`，mypy 亦会静态报错。
 """
 
 from agent.common.enums import IntentType, TaskStatus

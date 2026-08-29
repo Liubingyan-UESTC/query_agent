@@ -1,11 +1,12 @@
-"""通用基础设施：异常体系、结构化日志、ID 生成。
+"""通用基础设施：全局枚举与状态常量、异常体系、结构化日志、ID 生成。
 
 本层不依赖 agent 内的任何其他子包（含 config），是依赖图的根，
-因此可被任意模块安全导入而不会形成环。
+因此可被任意模块安全导入而不会形成环（由 tests/test_project_skeleton.py 守护）。
 """
 
 from agent.common.enums import (
     ACTIVE_TASK_STATUSES,
+    FINISHED_OPERATION_STATUSES,
     TERMINAL_TASK_STATUSES,
     AgentEnum,
     ArtifactType,
@@ -34,6 +35,7 @@ from agent.common.errors import (
 from agent.common.ids import (
     new_artifact_id,
     new_id,
+    new_message_id,
     new_session_id,
     new_task_id,
     new_trace_id,
@@ -49,6 +51,7 @@ from agent.common.logging import (
 
 __all__ = [
     "ACTIVE_TASK_STATUSES",
+    "FINISHED_OPERATION_STATUSES",
     "TERMINAL_TASK_STATUSES",
     "AgentEnum",
     "AgentError",
@@ -77,6 +80,7 @@ __all__ = [
     "log_context",
     "new_artifact_id",
     "new_id",
+    "new_message_id",
     "new_session_id",
     "new_task_id",
     "new_trace_id",
