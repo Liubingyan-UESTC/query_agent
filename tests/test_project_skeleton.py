@@ -84,3 +84,11 @@ def test_models_layer_only_depends_on_common_and_config() -> None:
     foreign = {name for name in pulled if not name.startswith(allowed)}
 
     assert not foreign, f"agent.models 只应依赖 common/config，实际额外拉入：{sorted(foreign)}"
+
+
+def test_task_model_does_not_pull_in_task_manage() -> None:
+    """验收：Task 对 manager 层零引用。重导出方向只能是 task_manage → models。"""
+    pulled = _imported_agent_modules("agent.models.task")
+
+    leaked = {name for name in pulled if name.startswith("agent.task_manage")}
+    assert not leaked, f"agent.models.task 不应拉入 task_manage，实际拉入：{sorted(leaked)}"

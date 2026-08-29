@@ -1,18 +1,12 @@
-"""Task 实体骨架。
+"""向后兼容的 Task 重导出层。
 
-当前仅保证语法完整与可导入；完整字段集（session_id / summary / trace_id /
-retry_count / status_history 等）与序列化方法在步骤 6 落地。
-状态转移逻辑不属于本模块，由步骤 19 的 TaskStateMachine 负责。
+Task 的唯一定义处已迁移到 `agent/models/task.py`（开发计划步骤 6）。
+本模块保留仅为不破坏既有 `from agent.task_manage.task import Task` 的引用。
+新代码请直接从 `agent.models.task` 导入。
+
+状态转移逻辑不属于本模块，也不属于模型层，由步骤 19 的 TaskStateMachine 负责。
 """
 
-from agent.task_manage.type import TaskStatus
+from agent.models.task import StatusRecord, Task
 
-
-class Task:
-    def __init__(
-        self,
-        task_id: str,
-        status: TaskStatus = TaskStatus.CREATED,
-    ) -> None:
-        self.task_id = task_id
-        self.status = status
+__all__ = ["StatusRecord", "Task"]

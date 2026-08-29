@@ -11,13 +11,20 @@ from agent.models.artifact import (
 )
 from agent.models.base import AgentModel
 from agent.models.message import Message, ToolCall
+from agent.models.task import StatusRecord, Task
+from agent.models.task_summary import INTENT_PROMPT_FIELDS, Operation, TaskSummary
 
 __all__ = [
     "DEFAULT_PREVIEW_CELL_CHARS",
     "DEFAULT_PREVIEW_MAX_CHARS",
     "DEFAULT_PREVIEW_ROWS",
+    "INTENT_PROMPT_FIELDS",
     "AgentModel",
     "Artifact",
     "Message",
+    "Operation",
+    "StatusRecord",
+    "Task",
+    "TaskSummary",
     "ToolCall",
 ]
