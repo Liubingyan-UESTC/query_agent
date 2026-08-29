@@ -184,11 +184,15 @@ artifact.preview(max_rows=5)
 `INTENT_PROMPT_FIELDS`（`content` + `status`），避免把尚未发生的 operations 或
 失败现场的 `output` 投喂给模型。空列表与未知字段名一律拒绝。
 
-`Task` 只做数据访问：`create()` 保证实体与摘要共享 `task_id` 且状态同为
-`CREATED`；`touch()` 刷新 `updated_at`；`record_status()` 同步实体状态、摘要状态
-与 `status_history`。**转移是否合法不在此处裁定**——`CREATED → COMPLETED` 在本层
-完全合法，规则留给步骤 19 的状态机。`error` 存 `AgentError.to_dict()`，以便
-`retryable` 随任务落盘。
+`Task` 只做数据访问：`create()` 要求显式传入 `session_id`（漏传会让每个请求变成
+独立会话，WorkingMemory 静默失效）；`touch()` 刷新 `updated_at`；改状态只能走
+`record_status()`——直接赋 `Task.status` 或 `summary.status` 都会被拦住，避免归档后
+出现「实体已完成、摘要仍显示 intending」。**转移是否合法不在此处裁定**。
+
+`error` 的类型是 `ErrorInfo`（`code` / `message` / `retryable` / `detail`），与
+`AgentError.to_dict()` 键集合一致，供落盘、状态机分流和步骤 26 的 HTTP 错误响应共用。
+`operations` 的 `index` 必须从 0 按列表顺序连续递增，这样 `operation(i)` 与执行循环
+的列表遍历是同一种解读。
 
 规范定义在 `agent/models/task.py`；`agent/task_manage/task.py` 只是兼容重导出。
 

@@ -41,7 +41,10 @@
 | `Artifact.schema` | `Artifact.data_schema` | `schema` 会遮蔽 `pydantic.BaseModel` 上已废弃的同名方法并触发 `UserWarning`。内外统一用 `data_schema`，不设 alias——该字段尚未成为对外契约，无需背兼容包袱 | 步骤 5 |
 | 各模型自备 `to_dict()` / `from_dict()` | 统一继承新增的 `AgentModel(BaseModel)` 基类 | 步骤 5–7 的五个模型都要在 Store 中序列化往返，逐个手写必然风格分叉。基类同时统一了 `extra="forbid"` 与 `validate_assignment=True` | 步骤 5 |
 | 在 `agent/task_manage/task.py` 补全 Task | 规范定义迁到 `agent/models/task.py`，`task_manage/task.py` 仅作兼容重导出 | Task 是纯数据，必须留在 models 层；放进 task_manage 会让 models 与 manager 循环引用，也破坏「Task 无任何对 manager 层的引用」这条验收 | 步骤 6 |
-| 仅提供 `touch()` | 额外提供 `record_status()` | `Task.status`、`summary.status`、`status_history` 三处必须同步。本方法只记账，**不校验转移方向**（`CREATED → COMPLETED` 在本层合法），转移规则仍由步骤 19 状态机裁定 | 步骤 6 |
+| 仅提供 `touch()` | 额外提供 `record_status()`，并用 validator + 冻结 `summary.status` 禁止绕过 | `Task.status`、`summary.status`、`status_history` 三处必须同步。本方法只记账，**不校验转移方向**；直接赋值在构造期与赋值期都会报错 | 步骤 6 |
+| `Task.error: ?`（未规定形状） | `ErrorInfo{code, message, retryable, detail}` | 与 `AgentError.to_dict()` 键集合对齐。裸 `dict` 会让步骤 20/24/26 各写各的键名，`retryable` 悄然丢失 | 步骤 6 |
+| `Task.create` 未规定 `session_id` 是否可省 | `session_id` 必填 | 漏传若静默 `new_session_id()`，每个请求变成独立会话，WorkingMemory 失效且无报错 | 步骤 6 |
+| `Operation.index` 未规定与列表顺序的关系 | 必须从 0 按列表顺序连续递增 | `operation(index)` 按键查找，执行循环按列表遍历；乱序时两种解读结果不同 | 步骤 6 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
