@@ -67,6 +67,27 @@ settings.context.token_budget()  # 按占比换算出的各部分 token 预算
 `CONTEXT_`、`MEMORY_`、`TOOL_`、`TASK_`、`STORE_`、`ES_`、`TRACE_`；全部键名见 `.env.example`
 （有测试守护二者不漂移）。配置缺失或非法时抛出 `ConfigError`，错误信息直接指明环境变量名。
 
+## 错误处理与日志
+
+所有内部异常继承 `AgentError`，携带 `code`（机器可读、用于 API 响应与指标）、`message`、
+`retryable`、`detail` 四项。其中 `retryable` 是任务状态机在 `RETRYING` 与 `FAILED` 之间
+分流的唯一依据，也是 LLM 客户端决定是否退避重试的唯一依据：
+
+```python
+from agent.common import ToolTimeoutError, log_context, setup_logging, get_logger, new_trace_id
+
+setup_logging("INFO")  # 单行 JSON 输出到 stderr，可重复调用不叠加
+logger = get_logger(__name__)
+
+with log_context(trace_id=new_trace_id(), task_id="task_..."):
+    logger.info("开始执行", extra={"tool": "search_tool"})
+```
+
+`trace_id / session_id / task_id` 存放在 `contextvars` 中，由日志过滤器自动注入每条记录，
+业务代码无需层层传递；用 `contextvars` 而非 `threading.local` 是为了同时隔离线程与
+asyncio 任务，适配后续的 SSE 流式接口。记录 `AgentError` 时，`code` 与 `retryable`
+会一并落进日志，排查时无需回查代码即可判断任务为何走了重试分支。
+
 ## 目录说明
 
 ```
@@ -102,14 +123,14 @@ common / config → models → store → { llm, memory_manage, tool_manage }
 
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 2**：
-步骤 1「项目骨架与依赖管理」、步骤 2「配置中心」已交付；
-步骤 3–8（异常与日志、全局枚举、数据模型、ContextWindow、存储抽象）尚未开始，
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 3**：
+步骤 1「项目骨架与依赖管理」、步骤 2「配置中心」、步骤 3「异常体系与日志」已交付；
+步骤 4–8（全局枚举、数据模型、ContextWindow、存储抽象）尚未开始，
 因此 M1 的里程碑成果（模型可序列化往返、Store 通过契约测试）目前还不具备。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（2/8） |
+| M1 基础设施 | 1 – 8 | 进行中（3/8） |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |

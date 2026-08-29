@@ -1,6 +1,6 @@
 """配置中心：集中声明全部可变参数，禁止业务代码内散落魔法值。"""
 
-from agent.config.errors import ConfigError
+from agent.common.errors import ConfigError
 from agent.config.settings import (
     AppSettings,
     ContextSettings,

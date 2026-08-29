@@ -25,6 +25,7 @@ select = [
     "TID",  # flake8-tidy-imports
     "ANN",  # flake8-annotations
     "ARG",  # flake8-unused-arguments
+    "A",    # flake8-builtins：禁止遮蔽内置名（如与内置 MemoryError 同名的异常类）
     "RUF",
 ]
 ignore = [

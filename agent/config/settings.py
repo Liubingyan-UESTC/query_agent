@@ -19,7 +19,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from agent.config.errors import ConfigError
+from agent.common.errors import ConfigError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"

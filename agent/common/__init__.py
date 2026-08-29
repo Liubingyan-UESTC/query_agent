@@ -1,1 +1,65 @@
-"""通用基础设施：枚举、异常、日志、ID 生成、指标与追踪。"""
+"""通用基础设施：异常体系、结构化日志、ID 生成。
+
+本层不依赖 agent 内的任何其他子包（含 config），是依赖图的根，
+因此可被任意模块安全导入而不会形成环。
+"""
+
+from agent.common.errors import (
+    AgentError,
+    AgentMemoryError,
+    ConfigError,
+    ContextError,
+    LLMError,
+    LLMRateLimitError,
+    LLMResponseFormatError,
+    LLMTimeoutError,
+    TaskCanceledError,
+    TaskStateError,
+    ToolError,
+    ToolInvocationError,
+    ToolNotFoundError,
+    ToolTimeoutError,
+)
+from agent.common.ids import (
+    new_artifact_id,
+    new_id,
+    new_session_id,
+    new_task_id,
+    new_trace_id,
+)
+from agent.common.logging import (
+    clear_log_context,
+    get_log_context,
+    get_logger,
+    log_context,
+    set_log_context,
+    setup_logging,
+)
+
+__all__ = [
+    "AgentError",
+    "AgentMemoryError",
+    "ConfigError",
+    "ContextError",
+    "LLMError",
+    "LLMRateLimitError",
+    "LLMResponseFormatError",
+    "LLMTimeoutError",
+    "TaskCanceledError",
+    "TaskStateError",
+    "ToolError",
+    "ToolInvocationError",
+    "ToolNotFoundError",
+    "ToolTimeoutError",
+    "clear_log_context",
+    "get_log_context",
+    "get_logger",
+    "log_context",
+    "new_artifact_id",
+    "new_id",
+    "new_session_id",
+    "new_task_id",
+    "new_trace_id",
+    "set_log_context",
+    "setup_logging",
+]
