@@ -107,6 +107,10 @@ class Message(AgentModel):
             raise ValueError("role=tool 的消息必须提供 tool_call_id，否则模型无法对应请求")
         if self.tool_call_id and self.role is not MessageRole.TOOL:
             raise ValueError(f"tool_call_id 仅对 role=tool 有意义，当前 role={self.role.value}")
+        if self.scope is not ContextScope.CURRENT and not self.source_task_id:
+            raise ValueError(
+                f"scope={self.scope.value} 的消息必须提供 source_task_id，否则注入来源无法追溯"
+            )
         return self
 
     def to_llm_dict(self) -> dict[str, Any]:

@@ -89,6 +89,15 @@ class Artifact(AgentModel):
             return payload
         return {**payload, "row_count": len(rows)}
 
+    @model_validator(mode="after")
+    def _injected_must_cite_source(self) -> "Artifact":
+        """漏标来源的注入产物会带着默认 CURRENT 被当成当前任务归档。"""
+        if self.scope is not ContextScope.CURRENT and not self.source_task_id:
+            raise ValueError(
+                f"scope={self.scope.value} 的产物必须提供 source_task_id，否则注入来源无法追溯"
+            )
+        return self
+
     @property
     def columns(self) -> list[str]:
         """表格列名。优先取 `data_schema`，否则从首行推断。"""

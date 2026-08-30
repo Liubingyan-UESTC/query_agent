@@ -129,6 +129,11 @@ def test_factories_forward_orchestration_kwargs(factory: object, role: MessageRo
 # ============================================================ 协议不变量
 
 
+def test_non_current_scope_requires_source_task_id() -> None:
+    with pytest.raises(ValidationError, match="source_task_id"):
+        Message.user("注入", scope=ContextScope.RELATED)
+
+
 def test_only_assistant_may_carry_tool_calls() -> None:
     with pytest.raises(ValidationError, match="assistant"):
         Message(

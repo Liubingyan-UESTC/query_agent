@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agent.common.enums import ArtifactType, ContextScope, MessageRole
+from agent.common.enums import ArtifactType, ContextScope, MessageRole, TaskStatus
 from agent.models.artifact import Artifact
 from agent.models.context_window import ContextWindow
 from agent.models.message import Message
@@ -57,6 +57,31 @@ def test_mismatched_summary_task_id_is_rejected() -> None:
             session_id="sess_1",
             summary=TaskSummary(task_id="task_b", content="q"),
         )
+
+
+def test_record_status_disconnects_summary_until_rebound() -> None:
+    """record_status 换掉 Task.summary 后，未 bind 则窗口仍是过期摘要。"""
+    task = Task.create("查昨天的错误日志", session_id="sess_1")
+    window = ContextWindow.from_task(task)
+
+    task.record_status(TaskStatus.INTENDING)
+
+    assert window.summary is not task.summary
+    assert window.summary.status is TaskStatus.CREATED
+    assert task.status is TaskStatus.INTENDING
+
+    window.bind_summary(task.summary)
+
+    assert window.summary is task.summary
+    assert window.summary.status is TaskStatus.INTENDING
+
+
+def test_bind_summary_rejects_a_different_task() -> None:
+    window = make_window()
+    foreign = TaskSummary(task_id="task_other", content="q")
+
+    with pytest.raises(ValidationError, match="不一致"):
+        window.bind_summary(foreign)
 
 
 # ============================================================ append / get messages
@@ -112,7 +137,7 @@ def test_get_messages_filters_by_roles() -> None:
 def test_get_messages_combines_scope_and_roles() -> None:
     window = make_window()
     window.append_message(Message.user("当前", scope=ContextScope.CURRENT))
-    window.append_message(Message.user("注入", scope=ContextScope.RELATED))
+    window.append_message(Message.user("注入", scope=ContextScope.RELATED, source_task_id="task_0"))
     window.append_message(Message.assistant("当前答", scope=ContextScope.CURRENT))
 
     selected = window.get_messages(scope=ContextScope.CURRENT, roles={MessageRole.USER})
@@ -123,6 +148,19 @@ def test_get_messages_combines_scope_and_roles() -> None:
 def test_empty_roles_filter_is_rejected() -> None:
     with pytest.raises(ValueError, match="roles"):
         make_window().get_messages(roles=())
+
+
+def test_get_messages_returns_a_copy() -> None:
+    """无过滤时若交出 self.content，append 会绕过 message_id 去重。"""
+    window = make_window()
+    window.append_message(Message.user("q"))
+
+    leaked = window.get_messages()
+    leaked.append(Message.assistant("leak"))
+
+    assert leaked is not window.content
+    assert len(window.get_messages()) == 1
+    assert all(item.content != "leak" for item in window.content)
 
 
 # ============================================================ artifacts
@@ -149,6 +187,27 @@ def test_put_artifact_overwrites_same_id() -> None:
     assert len(window.artifacts) == 1
 
 
+def test_artifact_dict_keys_must_match_artifact_id() -> None:
+    window = make_window()
+    artifact = make_artifact(window.task_id)
+
+    with pytest.raises(ValidationError, match="键必须等于 artifact_id"):
+        ContextWindow(
+            task_id=window.task_id,
+            session_id=window.session_id,
+            summary=window.summary,
+            artifacts={"wrong_key": artifact},
+        )
+
+
+def test_current_artifact_must_belong_to_this_task() -> None:
+    window = make_window()
+    foreign = make_artifact("task_other", title="别人的表")
+
+    with pytest.raises(ValidationError, match="必须属于本任务"):
+        window.put_artifact(foreign)
+
+
 def test_missing_artifact_raises_key_error() -> None:
     window = make_window()
 
@@ -168,6 +227,26 @@ def test_artifact_index_omits_payload_data() -> None:
     assert index[0].title == "错误日志"
     assert index[0].row_count == 1
     assert "data" not in index[0].to_dict()
+
+
+def test_artifact_index_defaults_to_current_scope() -> None:
+    """步骤 28 若直接调用，RELATED 表不能出现在默认目录里。"""
+    window = make_window()
+    window.put_artifact(make_artifact(window.task_id, title="本任务"))
+    window.put_artifact(
+        make_artifact(
+            "task_0",
+            title="关联表",
+            scope=ContextScope.RELATED,
+            source_task_id="task_0",
+        )
+    )
+
+    assert [item.title for item in window.list_artifact_index()] == ["本任务"]
+    assert [item.title for item in window.list_artifact_index(scope=None)] == ["本任务", "关联表"]
+    assert [item.title for item in window.list_artifact_index(scope=ContextScope.RELATED)] == [
+        "关联表"
+    ]
 
 
 def test_artifact_index_preserves_insertion_order() -> None:

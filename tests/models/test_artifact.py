@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agent.common.enums import ArtifactType
+from agent.common.enums import ArtifactType, ContextScope
 from agent.models.artifact import (
     DEFAULT_PREVIEW_CELL_CHARS,
     DEFAULT_PREVIEW_MAX_CHARS,
@@ -349,6 +349,16 @@ def test_unknown_field_is_rejected() -> None:
             producer="t",
             artifact_type=ArtifactType.TABLE,
             schema={"a": "text"},
+        )
+
+
+def test_non_current_scope_requires_source_task_id() -> None:
+    with pytest.raises(ValidationError, match="source_task_id"):
+        Artifact(
+            task_id="task_1",
+            producer="t",
+            artifact_type=ArtifactType.TABLE,
+            scope=ContextScope.RELATED,
         )
 
 

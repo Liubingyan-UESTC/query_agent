@@ -54,11 +54,23 @@ class ContextWindow(AgentModel):
     artifacts: dict[str, Artifact] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _summary_task_id_matches(self) -> "ContextWindow":
+    def _invariants(self) -> "ContextWindow":
         if self.summary.task_id != self.task_id:
             raise ValueError(
                 f"ContextWindow.task_id={self.task_id!r} 与 summary.task_id="
                 f"{self.summary.task_id!r} 不一致"
+            )
+        mismatched = [key for key, item in self.artifacts.items() if key != item.artifact_id]
+        if mismatched:
+            raise ValueError(f"artifacts 的键必须等于 artifact_id，下列键对不上：{mismatched}")
+        foreign = [
+            item.artifact_id
+            for item in self.artifacts.values()
+            if item.scope is ContextScope.CURRENT and item.task_id != self.task_id
+        ]
+        if foreign:
+            raise ValueError(
+                f"scope=current 的产物必须属于本任务，下列 artifact 的 task_id 对不上：{foreign}"
             )
         return self
 
@@ -66,12 +78,15 @@ class ContextWindow(AgentModel):
     def from_task(cls, task: Task) -> "ContextWindow":
         """从任务创建空窗口，复用同一份 `summary` 对象。
 
-        黑板语义要求窗口与任务看到同一份摘要。步骤 6 的 `record_status()`
-        会用 `model_copy` 换掉 `Task.summary`，换完之后调用方必须把新摘要
-        写回窗口（步骤 13 的 `update_summary` / 状态机钩子负责），本方法
-        只保证出生时二者是同一对象。
+        `Task.record_status()` 会用 `model_copy` 换掉 `Task.summary`，出生时的
+        共享引用随即断开。换完必须调用 `bind_summary(task.summary)`，否则
+        Store 会持久化一份过期摘要。步骤 13 的状态回写必须走这个口。
         """
         return cls(task_id=task.task_id, session_id=task.session_id, summary=task.summary)
+
+    def bind_summary(self, summary: TaskSummary) -> None:
+        """把任务侧换新的摘要绑回窗口。`record_status` 之后必须调用。"""
+        self.summary = summary
 
     def append_message(self, message: Message) -> None:
         if any(existing.message_id == message.message_id for existing in self.content):
@@ -83,7 +98,11 @@ class ContextWindow(AgentModel):
         scope: ContextScope | None = None,
         roles: Collection[MessageRole] | None = None,
     ) -> list[Message]:
-        """按 scope / 角色过滤，保持追加顺序。`None` 表示不按该维过滤。"""
+        """按 scope / 角色过滤，保持追加顺序。`None` 表示不按该维过滤。
+
+        返回值始终是新列表：直接交出 `self.content` 会让调用方 `append`
+        绕过 `append_message` 的去重。
+        """
         if roles is not None and len(roles) == 0:
             raise ValueError("roles 为空几乎总是漏传，若要全部角色请传 None")
         selected = self.content
@@ -92,7 +111,7 @@ class ContextWindow(AgentModel):
         if roles is not None:
             allowed = set(roles)
             selected = [item for item in selected if item.role in allowed]
-        return selected
+        return list(selected)
 
     def put_artifact(self, artifact: Artifact) -> None:
         self.artifacts = {**self.artifacts, artifact.artifact_id: artifact}
@@ -103,8 +122,14 @@ class ContextWindow(AgentModel):
         except KeyError:
             raise KeyError(f"窗口 {self.task_id} 没有 artifact_id={artifact_id}") from None
 
-    def list_artifact_index(self) -> list[ArtifactIndex]:
-        """产物目录，按写入顺序。不含 `data`，避免目录接口把结果集打出去。"""
+    def list_artifact_index(
+        self, scope: ContextScope | None = ContextScope.CURRENT
+    ) -> list[ArtifactIndex]:
+        """产物目录，按写入顺序。默认只列 `CURRENT`，避免把关联任务的表暴露给前端。
+
+        需要全量时显式传 `scope=None`。不含 `data`。
+        """
+        items = [item for item in self.artifacts.values() if scope is None or item.scope is scope]
         return [
             ArtifactIndex(
                 artifact_id=item.artifact_id,
@@ -115,7 +140,7 @@ class ContextWindow(AgentModel):
                 size_bytes=item.size_bytes,
                 scope=item.scope,
             )
-            for item in self.artifacts.values()
+            for item in items
         ]
 
     def split_by_scope(self) -> dict[ContextScope, ScopeSlice]:
