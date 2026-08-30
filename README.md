@@ -204,8 +204,12 @@ artifact.preview(max_rows=5)
 
 `split_by_scope()` 按 `Message.scope` / `Artifact.scope` 切开。写回只应取
 `CURRENT`；`RELATED`（关联任务注入）和 `HISTORY`（历史片段）参与推理但不归档，
-否则会话记忆会随轮次指数膨胀。`from_task(task)` 创建空窗口并复用同一份
-`summary` 对象。
+否则会话记忆会随轮次指数膨胀。
+
+注入片段必须带 `source_task_id`；`scope=current` 的产物必须属于本窗口的
+`task_id`。`list_artifact_index()` 默认只列 `CURRENT`，避免步骤 28 把关联表
+暴露给前端。`get_messages()` 始终返回新列表。`record_status()` 之后必须
+`bind_summary(task.summary)`，否则窗口里仍是过期摘要。
 
 ## 开发进度
 
