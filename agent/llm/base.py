@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
+from agent.config.settings import LLMPurpose
 from agent.models.base import AgentModel
 from agent.models.message import Message, ToolCall
 
@@ -47,6 +48,7 @@ class LLMRequest(AgentModel):
     tools: list[dict[str, Any]] | None = None
     response_format: dict[str, Any] | None = None
     stream: bool = False
+    purpose: LLMPurpose | None = None
 
     @field_validator("messages", mode="before")
     @classmethod

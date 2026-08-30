@@ -13,6 +13,13 @@ def test_request_accepts_message_objects() -> None:
 
     assert request.messages[0].content == "hi"
     assert request.stream is False
+    assert request.purpose is None
+
+
+def test_request_accepts_purpose() -> None:
+    request = LLMRequest(messages=[Message.user("hi")], purpose="intent")
+
+    assert request.purpose == "intent"
 
 
 def test_request_coerces_openai_shaped_dicts() -> None:
