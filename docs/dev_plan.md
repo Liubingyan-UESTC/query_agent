@@ -52,6 +52,9 @@
 | SDK 默认 `max_retries=2` | `OpenAICompatClient` 把 SDK 重试钉死为 0 | 重试由步骤 10 的 `ResilientLLMClient` 独占；两层各自退避会让实际次数变成乘法 | 步骤 9 |
 | `chat(request)` 与 `stream` 字段关系未写 | `chat()` 拒绝 `request.stream=True` | SDK 在 `stream=True` 时返回 iterator，当成 `LLMResponse` 用会立刻炸且错误难读 | 步骤 9 |
 | （无） | HTTP 408 映射为 `LLMTimeoutError` | 兼容网关常用 408 表示超时，SDK 只把它收成普通 `APIStatusError`，不翻译就会被当成不可重试的请求拒绝 | 步骤 9 |
+| （未规定 purpose 放哪） | `LLMRequest.purpose` 可选 `intent / plan / execute` | 路由必须跟着请求走，否则 `call_structured` 与阶段处理器要另开一套签名。显式 `model` 优先于 purpose | 步骤 10 |
+| schema 未规定形态 | 接受 JSON Schema dict 或 `BaseModel`；对象级子集校验（required / type / enum / additionalProperties） | 不引入 `jsonschema` 依赖。嵌套结构留给 pydantic 模型；dict 路径只保证顶层字段不被脏数据写进 summary | 步骤 10 |
+| 「主模型失败按 fallbacks 降级」 | 仅 `retryable=True` 耗尽后才降级；不可重试立即抛出 | 400 / 鉴权失败换端点通常同样失败，却会把重试次数与费用乘到链长。超时/限流才值得换模型 | 步骤 10 |
 
 #### 取值域严格性（2026-08-30 定稿）
 

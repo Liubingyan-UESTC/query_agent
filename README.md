@@ -231,32 +231,44 @@ artifact.preview(max_rows=5)
 `LLMProfile`。`chat()` 拒绝 `stream=True`，流式走 `stream_chat()`。
 
 `OpenAICompatClient` 基于 `openai` SDK 的兼容模式。SDK 自带重试钉死为 0——
-退避与降级属于步骤 10 的 `ResilientLLMClient`，两层各自重试会让次数变成乘法。
+退避与降级由 `ResilientLLMClient` 独占，两层各自重试会让次数变成乘法。
 SDK 异常翻译为 `LLMTimeoutError` / `LLMRateLimitError` / `LLMError`，并带上
 `retryable`。单测打桩 HTTP 层（不是 SDK 方法），以校验真实请求体。
 
+`build_llm_client(settings)` 是装配入口：`LLM_USE_MOCK=true` 走
+`MockLLMClient`，否则按 `profile_chain` 包一层 `ResilientLLMClient`。
+同一端点只对 `retryable=True` 指数退避；耗尽后再降级。`purpose` 把
+intent / plan / execute 路由到对应模型名，显式 `model` 优先。
+
+`call_structured` 优先 `response_format=json_schema`，端点不支持则退回
+提示词约束 + JSON 提取；校验失败带错误重问一次，再失败抛
+`LLMResponseFormatError`。`MockLLMClient` 按序号或 `when` 谓词回放，
+并记录完整 messages，供后续阶段断言 prompt。
+
 ```python
 from agent.config import get_settings
-from agent.llm import LLMRequest, OpenAICompatClient
+from agent.llm import LLMRequest, build_llm_client, call_structured
 from agent.models import Message
 
-client = OpenAICompatClient(get_settings().llm.primary)
+client = build_llm_client(get_settings())
 response = client.chat(LLMRequest(messages=[Message.user("查昨天的错误日志")]))
-response.content
-response.tool_calls
-response.usage.total_tokens
+data = call_structured(
+    client,
+    [Message.user("查昨天的错误日志")],
+    {"type": "object", "required": ["intent"], "properties": {"intent": {"type": "string"}}},
+    purpose="intent",
+)
 ```
 
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 9**：
-LLM 抽象与 OpenAI 兼容客户端已交付，HTTP 打桩测试覆盖请求拼装、响应解析、
-异常映射与流式分块顺序。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 10**：
+LLM 降级重试、结构化输出与 Mock 客户端已交付。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
 | M1 基础设施 | 1 – 8 | 已完成 |
-| M2 四大模块 | 9 – 18 | 进行中（9/18） |
+| M2 四大模块 | 9 – 18 | 进行中（10/18） |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
 | M5 流式与质量 | 29 – 32 | 未开始 |
