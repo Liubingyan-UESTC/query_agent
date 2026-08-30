@@ -67,6 +67,11 @@
 | Skill 未规定落点 | `Skill` 作为 `AgentModel` 放在 `knowledge_memory.py` | 不是 Store 载荷，不进 models 层 | 步骤 12 |
 | 默认 root 未写 | 默认 `agent/knowledge` 目录；`import agent.memory_manage` 不拉 `agent.knowledge` 包 | 分层守护按 import 图检查；资源包无逻辑，构造时才按文件系统定位 | 步骤 12 |
 | 资源引用用 `Path.is_absolute()` | 按 posix 规则拒绝以 `/` 或盘符开头的引用 | Windows 上无盘符的 `/tmp/...` 不一定被当成绝对路径，会拼到知识根下再 `resolve` 逃逸 | 步骤 12 |
+| `load_window(task_id)` 未给 session | `global/ctx_index/{task_id}` 反查 session，窗口键仍是 `session/context_window/{task_id}` | `make_key` 必须带 session；活窗口不能靠遍历 `keys()` | 步骤 13 |
+| `update_summary` 白名单未列字段 | 可写：`intent` / `related_task_ids` / `operations` / `result` / `output` | `status` 冻结走 `record_status`；`content` 是用户原文；`task_id` 是身份。LLM 脏字段直接拒绝 | 步骤 13 |
+| `create_window` 未规定是否建 Task | 只建窗口 + `TaskSummary`，不创建 `Task` 实体 | Task 生命周期是步骤 19/20 的事；这里建了会让 models 的状态记账和窗口各持一份 | 步骤 13 |
+| `add_artifact` 未规定消息角色 | 追加 `assistant` 消息，content 为引用 + `preview()`，`artifact_refs` 指向产物 | 执行阶段另补 tool 协议消息；此处只落实「大数据不进对话」 | 步骤 13 |
+| `inject_segment` 未规定 CURRENT | 拒绝 `scope=current`；不自动追加预览 | CURRENT 走 `add_artifact`。注入预览由步骤 22 组织，这里再拼一份会重复 | 步骤 13 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
@@ -327,17 +332,17 @@ common / config
 - **目标**：管理 Context Window 的创建、读写、持久化，作为黑板的唯一写入通道。
 - **交付物**：`agent/context_manage/context_manager.py`
   ```python
-  ContextManager(store, settings)
+  ContextManager(store, settings=None)              # 缺省 ContextSettings.from_env(None)，不读本地 .env
     create_window(task_id, session_id, query, system_prompt) -> ContextWindow
-    load_window(task_id) -> ContextWindow
-    save_window(window)
-    update_summary(task_id, **fields)               # 白名单字段校验
+    load_window(task_id) -> ContextWindow           # 经 ctx_index 反查 session
+    save_window(window)                             # 先算键再写，避免非法 session 留下半截索引
+    update_summary(task_id, **fields)               # 白名单：intent / related_task_ids / operations / result / output
     append_message(task_id, message)
-    add_artifact(task_id, artifact) -> str          # 返回 artifact_id，并自动向 content 追加引用+预览消息
+    add_artifact(task_id, artifact) -> str          # 仅 CURRENT；content 追加 assistant 引用+preview
     inject_segment(task_id, messages, artifacts, source_task_id, scope)
-    snapshot(task_id) -> dict                       # 只读快照，供调试/SSE 事件
+    snapshot(task_id) -> dict                       # 产物只给目录，不含 data
   ```
-- **设计要点**：`update_summary` 对字段做白名单与类型校验，禁止 LLM 返回的脏字段污染 summary；`add_artifact` 强制「大数据入 artifacts、引用入 content」的不变式。
+- **设计要点**：`update_summary` 对字段做白名单与 `TaskSummary.from_dict` 校验，禁止 LLM 脏字段污染 summary；`add_artifact` 强制「大数据入 artifacts、引用入 content」。不在此处创建 Task 实体。
 - **验收**：单测验证窗口创建后 `status=CREATED` 且 system 消息就位；非法字段更新被拒绝；`add_artifact` 后 content 中只出现引用与预览。
 
 ### 步骤 14：ContextManager —— 窗口装配与预算裁剪策略

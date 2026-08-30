@@ -307,15 +307,34 @@ tools = manager.knowledge.get_allowed_tools("new_query")
 fields = manager.knowledge.get_field_dict("logs-app")
 ```
 
+## ContextManager
+
+`ContextManager` 是黑板的唯一写入通道。创建窗口后 `status=CREATED`，第一条消息是
+system。`update_summary` 只接受 `intent` / `related_task_ids` / `operations` /
+`result` / `output`；`status`、用户原文 `content` 和脏字段一律拒绝。
+`add_artifact` 把全量放入 artifacts，content 只追加引用与 `preview()`。
+`inject_segment` 只写入 RELATED / HISTORY。`snapshot` 给调试和 SSE 用，不含
+`artifact.data`。活窗口按 `task_id` 索引，不走 WorkingMemory。
+
+```python
+from agent.context_manage import ContextManager
+from agent.store import MemoryStore
+
+mgr = ContextManager(MemoryStore())
+window = mgr.create_window(task_id, session_id, query, system_prompt)
+mgr.update_summary(task_id, intent="new_query")
+mgr.add_artifact(task_id, artifact)
+```
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 12**：
-KnowledgeMemory 与 MemoryManager 门面已交付。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 13**：
+ContextManager 窗口生命周期已交付。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
 | M1 基础设施 | 1 – 8 | 已完成 |
-| M2 四大模块 | 9 – 18 | 进行中（12/18） |
+| M2 四大模块 | 9 – 18 | 进行中（13/18） |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
 | M5 流式与质量 | 29 – 32 | 未开始 |
