@@ -1,0 +1,21 @@
+name: 意图不明
+description: 信息不足，无法规划查询或分析，需要向用户澄清。
+system_prompt_ref: system_prompts/plan_unknown.md
+allowed_tools: []
+field_dict_refs: []
+few_shots:
+  - role: user
+    content: 帮我看一下那个
+  - role: assistant
+    content: 需要澄清要查的索引、时间范围和指标，operations 为空。
+output_schema:
+  type: object
+  required:
+    - operations
+  additionalProperties: false
+  properties:
+    operations:
+      type: array
+      maxItems: 0
+      items:
+        type: object

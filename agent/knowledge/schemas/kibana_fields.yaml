@@ -1,0 +1,51 @@
+indexes:
+  - name: logs-app
+    description: 应用日志索引，按服务与级别检索错误和访问记录
+    fields:
+      - name: "@timestamp"
+        type: date
+        meaning: 事件发生时间
+        example: '@timestamp >= "now-1d"'
+      - name: service
+        type: keyword
+        meaning: 服务名
+        values:
+          - api-gateway
+          - query-agent
+          - billing
+        example: "service: query-agent"
+      - name: level
+        type: keyword
+        meaning: 日志级别
+        values:
+          - DEBUG
+          - INFO
+          - WARN
+          - ERROR
+        example: "level: ERROR"
+      - name: message
+        type: text
+        meaning: 日志正文
+        example: 'message: "timeout"'
+      - name: status
+        type: integer
+        meaning: HTTP 状态码
+        example: "status >= 500"
+  - name: metrics-host
+    description: 主机指标索引，用于 CPU / 内存等时序聚合
+    fields:
+      - name: "@timestamp"
+        type: date
+        meaning: 采样时间
+        example: '@timestamp >= "now-1h"'
+      - name: host
+        type: keyword
+        meaning: 主机名
+        example: "host: gpu-01"
+      - name: cpu_pct
+        type: float
+        meaning: CPU 使用率百分比
+        example: "cpu_pct > 80"
+      - name: mem_pct
+        type: float
+        meaning: 内存使用率百分比

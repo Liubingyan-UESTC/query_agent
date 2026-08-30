@@ -1,0 +1,41 @@
+name: kibana 新查询
+description: 从 Kibana/ES 按条件拉取尚未在本会话中取得的数据。
+system_prompt_ref: system_prompts/plan_new_query.md
+allowed_tools:
+  - search
+field_dict_refs:
+  - logs-app
+  - metrics-host
+few_shots:
+  - role: user
+    content: 查昨天 query-agent 的 ERROR 日志
+  - role: assistant
+    content: 使用 search 查询 logs-app，过滤 service:query-agent、level:ERROR，时间范围为昨天。
+output_schema:
+  type: object
+  required:
+    - operations
+  additionalProperties: false
+  properties:
+    operations:
+      type: array
+      items:
+        type: object
+        required:
+          - index
+          - name
+          - tool
+          - args
+          - expect
+        additionalProperties: false
+        properties:
+          index:
+            type: integer
+          name:
+            type: string
+          tool:
+            type: string
+          args:
+            type: object
+          expect:
+            type: string

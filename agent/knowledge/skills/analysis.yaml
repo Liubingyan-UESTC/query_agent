@@ -1,0 +1,42 @@
+name: 已有结果分析
+description: 对已有查询产物做聚合、对比或统计；缺少数据时才补一次查询。
+system_prompt_ref: system_prompts/plan_analysis.md
+allowed_tools:
+  - search
+  - analysis
+field_dict_refs:
+  - logs-app
+  - metrics-host
+few_shots:
+  - role: user
+    content: 按服务统计昨天这些错误的数量
+  - role: assistant
+    content: 对已有错误表做 analysis，按 service 聚合 count。
+output_schema:
+  type: object
+  required:
+    - operations
+  additionalProperties: false
+  properties:
+    operations:
+      type: array
+      items:
+        type: object
+        required:
+          - index
+          - name
+          - tool
+          - args
+          - expect
+        additionalProperties: false
+        properties:
+          index:
+            type: integer
+          name:
+            type: string
+          tool:
+            type: string
+          args:
+            type: object
+          expect:
+            type: string

@@ -14,6 +14,7 @@ from agent.common.enums import (
     IntentType,
     MessageRole,
     OperationStatus,
+    PromptStage,
     TaskStatus,
 )
 from agent.common.errors import (
@@ -68,6 +69,7 @@ __all__ = [
     "LLMTimeoutError",
     "MessageRole",
     "OperationStatus",
+    "PromptStage",
     "StoreError",
     "TaskCanceledError",
     "TaskStateError",

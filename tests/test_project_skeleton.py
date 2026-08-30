@@ -96,7 +96,10 @@ def test_store_layer_only_depends_on_common() -> None:
 
 
 def test_memory_layer_only_depends_on_common_config_models_store() -> None:
-    """WorkingMemory 读写 Store 与模型；不得拉入 llm / tool / context_manage。"""
+    """WorkingMemory / KnowledgeMemory 读写 Store 与模型；不得拉入 llm / tool / context_manage。
+
+    知识资源在 `agent.knowledge`，但本层按文件系统定位，import 时不加载该包。
+    """
     pulled = _imported_agent_modules("agent.memory_manage")
     allowed = (
         "agent.common",

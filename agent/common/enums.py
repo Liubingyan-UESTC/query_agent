@@ -23,6 +23,7 @@ __all__ = [
     "IntentType",
     "MessageRole",
     "OperationStatus",
+    "PromptStage",
     "TaskStatus",
 ]
 
@@ -95,6 +96,18 @@ class IntentType(AgentEnum):
     EXPORT = "export"
     CHAT = "chat"
     UNKNOWN = "unknown"
+
+
+class PromptStage(AgentEnum):
+    """装配系统提示词的阶段。取值与 `agent/knowledge/system_prompts/` 文件名对齐。
+
+    不能复用 `TaskStatus`：任务状态是 `intending`，提示词文件是 `intent_recognition.md`。
+    """
+
+    INTENT_RECOGNITION = "intent_recognition"
+    PLAN = "plan"
+    EXECUTE = "execute"
+    VALIDATE = "validate"
 
 
 class MessageRole(AgentEnum):

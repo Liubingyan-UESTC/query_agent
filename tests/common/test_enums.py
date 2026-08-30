@@ -14,6 +14,7 @@ from agent.common.enums import (
     IntentType,
     MessageRole,
     OperationStatus,
+    PromptStage,
     TaskStatus,
 )
 
@@ -24,6 +25,7 @@ ALL_ENUMS: list[type[AgentEnum]] = [
     ArtifactType,
     OperationStatus,
     ContextScope,
+    PromptStage,
 ]
 
 # 开发计划规定的取值域，逐一固定以防误增误删
@@ -45,6 +47,7 @@ EXPECTED_MEMBERS: dict[type[AgentEnum], set[str]] = {
     ArtifactType: {"TABLE", "SCALAR", "CHART", "FILE", "TEXT"},
     OperationStatus: {"PENDING", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED"},
     ContextScope: {"CURRENT", "RELATED", "HISTORY"},
+    PromptStage: {"INTENT_RECOGNITION", "PLAN", "EXECUTE", "VALIDATE"},
 }
 
 

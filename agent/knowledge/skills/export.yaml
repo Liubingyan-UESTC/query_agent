@@ -1,0 +1,41 @@
+name: 结果导出
+description: 把已有或即将查到的产物导出为 CSV/XLSX 文件。
+system_prompt_ref: system_prompts/plan_export.md
+allowed_tools:
+  - search
+  - export
+field_dict_refs:
+  - logs-app
+few_shots:
+  - role: user
+    content: 把刚才的错误日志导出成 CSV
+  - role: assistant
+    content: 对当前错误表调用 export，格式为 csv。
+output_schema:
+  type: object
+  required:
+    - operations
+  additionalProperties: false
+  properties:
+    operations:
+      type: array
+      items:
+        type: object
+        required:
+          - index
+          - name
+          - tool
+          - args
+          - expect
+        additionalProperties: false
+        properties:
+          index:
+            type: integer
+          name:
+            type: string
+          tool:
+            type: string
+          args:
+            type: object
+          expect:
+            type: string
