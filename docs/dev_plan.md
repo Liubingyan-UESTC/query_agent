@@ -61,6 +61,12 @@
 | `build_llm_client` 一律包 Resilient | `LLM_USE_MOCK=true` 返回裸 Mock | 本地无密钥只需脚本回放；测健壮性须像单测那样手工再包一层 | 步骤 10 |
 | Mock 异常可被重试多次（未写） | 异常实例消费后 `used` 不回滚 | `max_retries>=1` 却只 enqueue 一条超时时，第二次变成不可重试的「没有匹配」，降级链被截断。同客户端重试须用 callable 或每 attempt 一条 | 步骤 10 |
 | `WorkingMemory` 只写三个 namespace | 另增 List 键 `wm_index/task_ids` 记录写入顺序 | `keys()` 在 Redis 下无序，`trim` / `get_summary_history` 必须有稳定顺序，不能靠遍历键 | 步骤 11 |
+| `get_system_prompt(stage)` 未规定 stage 类型 | 新增 `PromptStage`：`intent_recognition` / `plan` / `execute` / `validate` | 与提示词文件名对齐。不能复用 `TaskStatus`（`intending` ≠ `intent_recognition`） | 步骤 12 |
+| （未规定 `base.md` 如何拼入） | `get_system_prompt` 恒把 `base.md` 放在阶段提示词之前 | 身份与阶段指令分文件；装配器（步骤 15）不应再拼一次 | 步骤 12 |
+| （未规定 YAML 解析依赖） | 增加 `pyyaml` | 计划指定 skill / 字段字典为 YAML | 步骤 12 |
+| Skill 未规定落点 | `Skill` 作为 `AgentModel` 放在 `knowledge_memory.py` | 不是 Store 载荷，不进 models 层 | 步骤 12 |
+| 默认 root 未写 | 默认 `agent/knowledge` 目录；`import agent.memory_manage` 不拉 `agent.knowledge` 包 | 分层守护按 import 图检查；资源包无逻辑，构造时才按文件系统定位 | 步骤 12 |
+| 资源引用用 `Path.is_absolute()` | 按 posix 规则拒绝以 `/` 或盘符开头的引用 | Windows 上无盘符的 `/tmp/...` 不一定被当成绝对路径，会拼到知识根下再 `resolve` 逃逸 | 步骤 12 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
@@ -74,7 +80,8 @@ JSON Schema 的 enum 约束（步骤 15 提示词装配、步骤 9 LLM 结构化
 仅当调用方明确需要兜底时才传 `default=`（如 `IntentType.from_str(raw, default=IntentType.UNKNOWN)`），
 这是显式选择，与猜测拼写是两回事。
 
-正确写法速查：`IntentType.NEW_QUERY` / `IntentType.ANALYSIS` / `IntentType.UNKNOWN`。
+正确写法速查：`IntentType.NEW_QUERY` / `IntentType.ANALYSIS` / `IntentType.UNKNOWN`；
+提示词阶段用 `PromptStage.INTENT_RECOGNITION`，不要拿 `TaskStatus.INTENDING` 去选文件。
 
 ### 1.3 目标目录结构（最终形态）
 
@@ -297,21 +304,22 @@ common / config
 - **交付物**：
   - `agent/knowledge/` 资源目录：
     - `system_prompts/base.md`、`intent_recognition.md`、`plan_<intent>.md`、`execute.md`、`validate.md`
-    - `skills/<intent>.yaml`：`{ name, description, system_prompt_ref, allowed_tools, field_dict_refs, few_shots, output_schema }`
+    - `skills/<intent>.yaml`：`{ name, description, system_prompt_ref, allowed_tools, field_dict_refs, few_shots, output_schema }`（五个 `IntentType` 都必须有）
     - `schemas/kibana_fields.yaml`：索引名、字段名、类型、含义、可选值、示例查询
+  - `PromptStage`：`intent_recognition` / `plan` / `execute` / `validate`
   - `agent/memory_manage/knowledge_memory.py`
     ```python
-    KnowledgeMemory(root_dir)
-      get_system_prompt(stage, intent=None) -> str
+    KnowledgeMemory(root_dir=None)                 # 默认 agent/knowledge
+      get_system_prompt(stage, intent=None) -> str # 恒前置 base.md；规划阶段必须带 intent，正文取 skill.system_prompt_ref
       get_skill(intent) -> Skill
-      get_field_dict(index=None) -> str
+      get_field_dict(index=None) -> str            # 稳定 Markdown；缺索引直接报错
       get_few_shots(intent) -> list[Message]
       get_allowed_tools(intent) -> list[str]
-      reload()                                     # 开发期热加载
+      reload()                                     # 失败时保留上一份快照
     ```
-  - `agent/memory_manage/memory_manager.py`：`MemoryManager` 门面，聚合 `working(session_id)` 与 `knowledge`，对上层提供单一入口
+  - `agent/memory_manage/memory_manager.py`：`MemoryManager(store, knowledge=..., knowledge_root=...)` 门面，`working(session_id)` 与 `knowledge`
 - **设计要点**：资源文件全部纯文本/YAML，改提示词不改代码；启动时做一次 schema 校验，缺失引用直接报错而非静默降级。
-- **验收**：单测验证各意图 skill 完整加载、缺失文件报明确错误、字段字典渲染文本稳定；`reload()` 生效。
+- **验收**：单测验证各意图 skill 完整加载、缺失文件报明确错误、字段字典渲染文本稳定；`reload()` 生效且失败不半更新。
 
 ### 步骤 13：ContextManager —— 窗口生命周期
 

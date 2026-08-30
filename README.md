@@ -92,7 +92,7 @@ asyncio 任务，适配后续的 SSE 流式接口。记录 `AgentError` 时，`c
 ## 枚举取值域
 
 `agent/common/enums.py` 固化 `TaskStatus`、`IntentType`、`MessageRole`、`ArtifactType`、
-`OperationStatus`、`ContextScope` 六个取值域。全部继承 `StrEnum`，成员值即小写字符串，
+`OperationStatus`、`ContextScope`、`PromptStage` 七个取值域。全部继承 `StrEnum`，成员值即小写字符串，
 可直接 `json.dumps`，且 `TaskStatus.CREATED == "created"` 成立：
 
 ```python
@@ -281,15 +281,41 @@ memory.get_summary_history(limit=10)
 summary, content, artifacts = memory.get_task_bundle(task_id)
 ```
 
+## KnowledgeMemory
+
+固定知识外置为 Markdown / YAML，改提示词不改代码。`KnowledgeMemory()` 默认读取
+`agent/knowledge`：`system_prompts/`、`skills/<intent>.yaml`、`schemas/kibana_fields.yaml`。
+五个 `IntentType` 都必须有 skill。构造与 `reload()` 做完整校验，缺文件或缺引用抛
+`AgentMemoryError`，不静默降级。`reload()` 失败时保留上一份快照。
+
+`get_system_prompt(stage, intent=None)` 的 `stage` 是 `PromptStage`
+（`intent_recognition` / `plan` / `execute` / `validate`），恒把 `base.md` 放在阶段词前面。
+规划阶段必须带 intent，正文走该 skill 的 `system_prompt_ref`。
+`get_field_dict()` 渲染为稳定 Markdown；未知索引直接报错。
+
+`MemoryManager(store)` 是上层入口：`working(session_id)` 与 `.knowledge`。
+`LLM_USE_MOCK` 与知识资源无关，本地无密钥仍加载同一套文件。
+
+```python
+from agent.common import IntentType, PromptStage
+from agent.memory_manage import MemoryManager
+from agent.store import MemoryStore
+
+manager = MemoryManager(MemoryStore())
+prompt = manager.knowledge.get_system_prompt(PromptStage.PLAN, IntentType.NEW_QUERY)
+tools = manager.knowledge.get_allowed_tools("new_query")
+fields = manager.knowledge.get_field_dict("logs-app")
+```
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 11**：
-WorkingMemory 已交付，LLM purpose 路由按当前 profile 解析。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 12**：
+KnowledgeMemory 与 MemoryManager 门面已交付。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
 | M1 基础设施 | 1 – 8 | 已完成 |
-| M2 四大模块 | 9 – 18 | 进行中（11/18） |
+| M2 四大模块 | 9 – 18 | 进行中（12/18） |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
 | M5 流式与质量 | 29 – 32 | 未开始 |
