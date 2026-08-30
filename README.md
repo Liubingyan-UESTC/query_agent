@@ -211,15 +211,24 @@ artifact.preview(max_rows=5)
 暴露给前端。`get_messages()` 始终返回新列表。`record_status()` 之后必须
 `bind_summary(task.summary)`，否则窗口里仍是过期摘要。
 
+## 存储
+
+`agent/store` 提供 `KVStore` / `ListStore` 抽象与线程安全的 `MemoryStore`。
+业务代码只依赖抽象：`get` / `set` / `delete` / `exists` / `keys` / `expire` 与
+`push` / `range` / `trim` / `length`。语义对齐 Redis（闭区间、负下标），
+步骤 27 的 Redis 实现加入 `STORE_FACTORIES` 后整份契约测试自动覆盖。
+
+键名由 `make_key(session_id, namespace, id)` 拼成 `agent:{session}:{ns}:{id}`，
+段内禁止冒号。TTL 惰性过期；读出的值是拷贝。KV 与 List 不能共用同一键。
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 7**：
-步骤 1–7 已交付；步骤 8（存储抽象）尚未开始，
-因此 M1 的里程碑成果中「Store 通过契约测试」一项目前还不具备。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 8**：
+M1 基础设施已交付，模型可序列化往返、Store 通过契约测试。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 进行中（7/8） |
+| M1 基础设施 | 1 – 8 | 已完成 |
 | M2 四大模块 | 9 – 18 | 未开始 |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |

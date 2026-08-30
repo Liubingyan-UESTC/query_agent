@@ -47,6 +47,7 @@
 | `Operation.index` 未规定与列表顺序的关系 | 必须从 0 按列表顺序连续递增 | `operation(index)` 按键查找，执行循环按列表遍历；乱序时两种解读结果不同 | 步骤 6 |
 | `Artifact` 无 scope | 增加 `scope` / `source_task_id`，默认 `CURRENT`；非 CURRENT 必须带 `source_task_id` | `split_by_scope()` 必须同时切开产物。漏标来源会带着默认 CURRENT 被当成当前任务归档 | 步骤 7 |
 | `list_artifact_index()` 无过滤 | 默认只列 `CURRENT`，`scope=None` 才全量 | 步骤 28 的 `artifacts: [索引]` 若直接调用，会把关联任务的表暴露给前端 | 步骤 7 |
+| 存储异常未单列 | 新增 `StoreError` | 类型不匹配、键格式问题需要稳定 `code`，Redis 瞬时故障可按实例把 `retryable` 覆为 True | 步骤 8 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
