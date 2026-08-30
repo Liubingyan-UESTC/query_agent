@@ -2,6 +2,11 @@
 
 支持两种匹配：按入队顺序消费，或用 `when` 谓词抢先命中。收到的完整
 `LLMRequest`（含 messages）全部记入 `calls`，供断言 prompt 内容。
+
+脚本化的异常实例（如 `LLMTimeoutError("timeout")`）消费后 `used` 不会回滚。
+`max_retries=1` 却只 enqueue 一条超时，第二次会变成不可重试的
+「没有匹配的 Mock 响应」，降级链被截断。同客户端重试请用 callable
+（失败后再成功），或给每个 attempt 各放一条。
 """
 
 from __future__ import annotations

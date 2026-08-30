@@ -139,6 +139,54 @@ def test_explicit_model_wins_over_purpose() -> None:
     assert inner.calls[0].model == "forced"
 
 
+def test_purpose_does_not_pin_fallback_to_primary_model() -> None:
+    """降级端点必须用自己的 profile.model，不能继续要 intent / 主模型的名字。"""
+    primary = MockLLMClient([LLMTimeoutError("timeout")])
+    backup = MockLLMClient([MockLLMClient.reply("ok")])
+    client = _client(
+        primary,
+        backup,
+        settings=_settings(fallbacks=[LLMProfile(name="backup", model="backup-model")]),
+    )
+
+    client.chat(LLMRequest(messages=[Message.user("q")], purpose="intent"))
+
+    assert primary.calls[0].model == "intent-model"
+    assert backup.calls[0].model == "backup-model"
+
+
+def test_explicit_model_is_shared_across_fallback_chain() -> None:
+    primary = MockLLMClient([LLMTimeoutError("timeout")])
+    backup = MockLLMClient([MockLLMClient.reply("ok")])
+    client = _client(
+        primary,
+        backup,
+        settings=_settings(fallbacks=[LLMProfile(name="backup", model="backup-model")]),
+    )
+
+    client.chat(LLMRequest(messages=[Message.user("q")], model="forced"))
+
+    assert primary.calls[0].model == "forced"
+    assert backup.calls[0].model == "forced"
+
+
+def test_empty_purpose_route_still_uses_fallback_profile_model() -> None:
+    settings = LLMSettings(
+        use_mock=True,
+        primary=LLMProfile(name="primary", model="main-model", max_retries=0),
+        fallbacks=[LLMProfile(name="backup", model="backup-model")],
+        intent_model=None,
+    )
+    primary = MockLLMClient([LLMTimeoutError("timeout")])
+    backup = MockLLMClient([MockLLMClient.reply("ok")])
+    client = _client(primary, backup, settings=settings)
+
+    client.chat(LLMRequest(messages=[Message.user("q")], purpose="intent"))
+
+    assert primary.calls[0].model == "main-model"
+    assert backup.calls[0].model == "backup-model"
+
+
 def test_backoff_is_capped() -> None:
     sleeps: list[float] = []
     replies: list[object] = [LLMTimeoutError("t") for _ in range(6)]

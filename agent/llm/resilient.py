@@ -3,6 +3,13 @@
 同一底层客户端只对 `retryable=True` 的异常做指数退避；重试耗尽后再按
 `fallbacks` 换下一个。不可重试的错误立即抛出——换端点也治不好 400。
 
+按用途路由只作用于主模型：调用方没写死 `model` 时，`model_for(purpose)`
+覆盖 index=0；备用端点用各自的 `profile.model`。整条链共用一个模型名
+会变成「换了 base_url，还在要对方没有的名字」。
+
+超时落在内层 `OpenAICompatClient(timeout=profile.timeout)`，本装饰器
+不做总墙钟。流式只对首个 chunk 创建失败降级，流出之后中途断流不换端点。
+
 SDK 层重试已关闭，本模块是唯一的退避入口，`LLMProfile.max_retries`
 表示「首次失败之后」的重试次数。
 """
@@ -78,10 +85,16 @@ class ResilientLLMClient(BaseLLMClient):
         for client in self._clients:
             client.close()
 
-    def _prepare(self, request: LLMRequest) -> LLMRequest:
-        if request.model is not None or request.purpose is None:
+    def _bind_model(self, request: LLMRequest, profile: LLMProfile, index: int) -> LLMRequest:
+        """按当前端点解析模型名，不把主模型的名字钉到整条降级链上。"""
+        if request.model is not None:
             return request
-        return request.model_copy(update={"model": self.settings.model_for(request.purpose)})
+        name = (
+            self.settings.model_for(request.purpose)
+            if index == 0 and request.purpose is not None
+            else profile.model
+        )
+        return request.model_copy(update={"model": name})
 
     def _profile_at(self, index: int) -> LLMProfile:
         chain = self.settings.profile_chain()
@@ -90,22 +103,24 @@ class ResilientLLMClient(BaseLLMClient):
         return self.settings.primary
 
     def _run(self, request: LLMRequest, invoke: Callable[[BaseLLMClient, LLMRequest], T]) -> T:
-        prepared = self._prepare(request)
         started = self._clock()
         last_error: LLMError | None = None
         retries = 0
+        last_bound = request
 
         for fallback_index, client in enumerate(self._clients):
             profile = self._profile_at(fallback_index)
+            bound = self._bind_model(request, profile, fallback_index)
+            last_bound = bound
             attempts = profile.max_retries + 1
             for attempt in range(attempts):
                 try:
-                    result = invoke(client, prepared)
+                    result = invoke(client, bound)
                 except LLMError as exc:
                     last_error = exc
                     if not exc.retryable:
                         self._publish(
-                            prepared,
+                            bound,
                             profile,
                             fallback_index,
                             retries,
@@ -119,7 +134,7 @@ class ResilientLLMClient(BaseLLMClient):
                     continue
                 response = result if isinstance(result, LLMResponse) else None
                 self._publish(
-                    prepared,
+                    bound,
                     profile,
                     fallback_index,
                     retries,
@@ -131,7 +146,7 @@ class ResilientLLMClient(BaseLLMClient):
 
         assert last_error is not None
         self._publish(
-            prepared,
+            last_bound,
             self._profile_at(len(self._clients) - 1),
             len(self._clients) - 1,
             retries,

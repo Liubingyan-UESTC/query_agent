@@ -24,7 +24,10 @@ def build_llm_client(
     sleeper: Callable[[float], None] | None = None,
     http_client: Any | None = None,
 ) -> BaseLLMClient:
-    """`LLM_USE_MOCK=true` 时返回 Mock；否则按 profile 链包一层 `ResilientLLMClient`。"""
+    """`LLM_USE_MOCK=true` 时返回裸 Mock，不包 `ResilientLLMClient`。
+
+    本地无密钥跑通链路够用；要测重试/降级必须像单测那样手工再包一层。
+    """
     llm = settings.llm if isinstance(settings, AppSettings) else settings
     if llm.use_mock:
         return mock if mock is not None else MockLLMClient()
