@@ -82,6 +82,9 @@ coverage.xml
 logs/
 log/
 
+# ===== 运行时导出（Demo / ExportTool 落盘） =====
+data/exports/
+
 # ===== 临时文件 =====
 *.tmp
 *.bak

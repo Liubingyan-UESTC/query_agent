@@ -1,0 +1,96 @@
+## system
+你是面向 Kibana / Elasticsearch 的查询 Agent。
+
+职责：
+- 把用户的自然语言请求落实为可执行的查询、分析或导出步骤
+- 只使用当前意图允许的工具与字段字典中出现的索引、字段
+- 不确定时先澄清，不要编造字段名、索引名或统计结果
+
+约束：
+- 大结果集进入 artifacts，对话里只保留引用与预览
+- 不向用户暴露内部编排字段（scope、source_task_id、artifact 全量数据）
+- 回答使用简体中文，技术标识符保持原文
+
+当前阶段是校验。
+
+对照用户原始请求、任务摘要、对话要点与产物索引，判断是否已经满足请求。
+- 满足：给出可直接返回给用户的 final_output
+- 不满足：列出 missing，并给出下一轮规划可用的 suggestion
+- 不要为了通过校验而编造未查询到的数据
+
+
+## user
+## 原始请求
+查昨天 query-agent 的 ERROR 日志
+
+## 当前任务摘要
+{
+  "task_id": "task_1",
+  "content": "查昨天 query-agent 的 ERROR 日志",
+  "intent": "new_query",
+  "related_task_ids": [
+    "task_0"
+  ],
+  "operations": [
+    {
+      "index": 0,
+      "name": "查错误日志",
+      "tool": "search",
+      "args": {
+        "index": "logs-app",
+        "limit": 20
+      },
+      "status": "pending",
+      "result_ref": null,
+      "error": null
+    }
+  ],
+  "result": null,
+  "status": "planning",
+  "output": null
+}
+
+## 对话摘要
+[user/current] 查昨天 query-agent 的 ERROR 日志
+
+## 产物索引
+[
+  {
+    "artifact_id": "art_fixed",
+    "title": "错误表",
+    "artifact_type": "table",
+    "producer": "search",
+    "row_count": 1,
+    "size_bytes": null,
+    "scope": "current"
+  }
+]
+
+## output_schema
+{
+  "additionalProperties": false,
+  "properties": {
+    "final_output": {
+      "type": "string"
+    },
+    "missing": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "satisfied": {
+      "type": "boolean"
+    },
+    "suggestion": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "satisfied",
+    "missing",
+    "suggestion",
+    "final_output"
+  ],
+  "type": "object"
+}

@@ -141,6 +141,35 @@ def test_context_layer_only_depends_on_common_config_models_store() -> None:
     )
 
 
+def test_prompt_layer_depends_on_context_memory_and_llm() -> None:
+    """PromptAssembler 合成知识与窗口，可依赖 memory / context / llm，不得拉 tool / task。"""
+    pulled = _imported_agent_modules("agent.prompt")
+    allowed = (
+        "agent.common",
+        "agent.config",
+        "agent.models",
+        "agent.store",
+        "agent.llm",
+        "agent.memory_manage",
+        "agent.context_manage",
+        "agent.prompt",
+    )
+    foreign = {name for name in pulled if not name.startswith(allowed)}
+
+    assert not foreign, f"agent.prompt 依赖越界，实际额外拉入：{sorted(foreign)}"
+
+
+def test_tool_layer_only_depends_on_common_config_models() -> None:
+    """工具层与 llm / memory / context 互不依赖。字段目录以 Protocol 注入。"""
+    pulled = _imported_agent_modules("agent.tool_manage")
+    allowed = ("agent.common", "agent.config", "agent.models", "agent.tool_manage")
+    foreign = {name for name in pulled if not name.startswith(allowed)}
+
+    assert not foreign, (
+        f"agent.tool_manage 只应依赖 common/config/models，实际额外拉入：{sorted(foreign)}"
+    )
+
+
 def test_task_model_does_not_pull_in_task_manage() -> None:
     """验收：Task 对 manager 层零引用。重导出方向只能是 task_manage → models。"""
     pulled = _imported_agent_modules("agent.models.task")

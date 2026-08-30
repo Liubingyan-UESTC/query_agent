@@ -80,6 +80,16 @@ def test_field_dict_render_is_stable() -> None:
     assert "## metrics-host" in one
 
 
+def test_catalog_accessors_match_field_dict() -> None:
+    memory = KnowledgeMemory()
+
+    assert memory.has_index("logs-app")
+    assert not memory.has_index("no-such")
+    assert memory.list_indexes() == ["logs-app", "metrics-host"]
+    assert "@timestamp" in memory.field_names("logs-app")
+    assert memory.get_index("logs-app").name == "logs-app"
+
+
 def test_unknown_index_is_explicit_error() -> None:
     memory = KnowledgeMemory()
     with pytest.raises(AgentMemoryError, match="没有索引 'no-such'"):

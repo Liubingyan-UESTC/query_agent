@@ -162,6 +162,10 @@ class ContextSettings(_GroupSettings):
     history_summary_limit: int = Field(default=10, ge=0)
     # 单个关联任务注入的 content 条数上限
     related_task_content_limit: int = Field(default=6, ge=0)
+    # 执行阶段保留的近 K 轮对话（一轮 = user | assistant | assistant+tools）
+    recent_content_limit: int = Field(default=8, ge=0)
+    # 规划 / 校验阶段单条 content 摘要的字符上限
+    content_digest_chars: int = Field(default=400, gt=0)
 
     @model_validator(mode="after")
     def _ratios_must_sum_to_one(self) -> Self:
@@ -205,6 +209,8 @@ class ToolSettings(_GroupSettings):
     default_timeout: float = Field(default=30.0, gt=0)
     max_result_rows: int = Field(default=1000, gt=0)
     max_retry: int = Field(default=2, ge=0)
+    export_dir: Path = Field(default=Path("data/exports"), description="ExportTool 落盘目录")
+    use_mock: bool = Field(default=False, description="为 true 时只实例化 is_mock 工具")
 
 
 # ============================================================ 任务护栏

@@ -8,6 +8,7 @@ from agent.llm.base import LLMRequest
 from agent.llm.mock_client import MockLLMClient
 from agent.llm.structured import call_structured, extract_json
 from agent.models.message import Message
+from agent.prompt.assembler import EmptyPlanOutput
 
 SCHEMA = {
     "title": "Intent Result!",
@@ -262,6 +263,68 @@ def test_number_accepts_int_and_boolean_array_object() -> None:
 
     assert data["n"] == 2
     assert data["ok"] is False
+
+
+def test_max_items_and_nested_required() -> None:
+    schema = {
+        "type": "object",
+        "required": ["operations"],
+        "additionalProperties": False,
+        "properties": {
+            "operations": {
+                "type": "array",
+                "maxItems": 0,
+                "items": {
+                    "type": "object",
+                    "required": ["index", "tool"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "tool": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+    ok = MockLLMClient([MockLLMClient.reply('{"operations":[]}')])
+    assert call_structured(ok, [Message.user("q")], schema) == {"operations": []}
+
+    too_many = MockLLMClient([MockLLMClient.reply('{"operations":[{"index":0,"tool":"search"}]}')])
+    with pytest.raises(LLMResponseFormatError, match="maxItems"):
+        call_structured(too_many, [Message.user("q")], schema, max_repair=0)
+
+    nested = {
+        "type": "object",
+        "required": ["operations"],
+        "properties": {
+            "operations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["index", "tool"],
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "tool": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+    missing = MockLLMClient([MockLLMClient.reply('{"operations":[{"index":0}]}')])
+    with pytest.raises(LLMResponseFormatError, match="缺少字段"):
+        call_structured(missing, [Message.user("q")], nested, max_repair=0)
+
+    chat_ok = MockLLMClient([MockLLMClient.reply('{"operations":[]}')])
+    assert call_structured(chat_ok, [Message.user("q")], EmptyPlanOutput) == {"operations": []}
+    chat_bad = MockLLMClient(
+        [
+            MockLLMClient.reply(
+                '{"operations":[{"index":0,"name":"x","tool":"search","args":{},"expect":"y"}]}'
+            )
+        ]
+    )
+    with pytest.raises(LLMResponseFormatError):
+        call_structured(chat_bad, [Message.user("q")], EmptyPlanOutput, max_repair=0)
 
 
 def test_property_without_type_and_non_dict_spec() -> None:

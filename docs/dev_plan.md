@@ -72,6 +72,24 @@
 | `create_window` 未规定是否建 Task | 只建窗口 + `TaskSummary`，不创建 `Task` 实体 | Task 生命周期是步骤 19/20 的事；这里建了会让 models 的状态记账和窗口各持一份 | 步骤 13 |
 | `add_artifact` 未规定消息角色 | 追加 `assistant` 消息，content 为引用 + `preview()`，`artifact_refs` 指向产物 | 执行阶段另补 tool 协议消息；此处只落实「大数据不进对话」 | 步骤 13 |
 | `inject_segment` 未规定 CURRENT | 拒绝 `scope=current`；不自动追加预览 | CURRENT 走 `add_artifact`。注入预览由步骤 22 组织，这里再拼一份会重复 | 步骤 13 |
+| `build_messages(..., knowledge)` | `knowledge` 为 Protocol `KnowledgeView`，另提供 `StageAssembleOptions` | context_manage 不得 import memory。意图识别要 history、执行要 operation / tool_schemas，四参签名装不下 | 步骤 14 |
+| （无） | 新增 `CONTEXT_RECENT_CONTENT_LIMIT` / `CONTEXT_CONTENT_DIGEST_CHARS` | 执行「近 K 轮」与规划/校验「content 摘要」若写成模块常量，步骤 22/23 无法按会话调预算 | 步骤 14 |
+| tiktoken 为可插拔 | 不列入 requirements；缺省 `CharEstimateCounter` | 硬依赖会把编码表绑进每次安装。`default_counter()` 发现 tiktoken 再升级为精确计数 | 步骤 14 |
+| 方法返回 `LLMRequest` | 返回 `AssembledPrompt{request, output_schema, output_model}` | 「同时返回 schema」用具名对象；规划阶段 `output_model` 供 `call_structured` 走 pydantic | 步骤 15 |
+| validate 未规定 purpose | `purpose=None`（走主模型） | `LLMPurpose` 只有 intent/plan/execute；硬塞 execute 会让校验误用执行模型 | 步骤 15 |
+| `ToolResult.error: ToolError` | `ErrorInfo` | 异常实例不能进 pydantic / Store；与 `Task.error` 键集合对齐 | 步骤 16 |
+| `ToolContext` 为模型 | dataclass，持有 `artifacts_reader` 可调用对象 | AgentModel 不能稳妥序列化 callable，且工具上下文本就不落盘 | 步骤 16 |
+| `list_tools(intent)` 读 skill | 需 `allowed_tools_lookup` 或显式 `allowed_tools` | tool_manage 与 memory 互不依赖；skill 白名单由装配层注入 | 步骤 17 |
+| Mock 与真实工具并存 | 同名 `search`/`analysis`/`export`，用 `is_mock` + `TOOL_USE_MOCK` 分流 | skill 白名单写的是 `search` 不是 `mock_search`；发现时按 mock 位过滤后再做重名检测 | 步骤 17 |
+| （无） | `TOOL_EXPORT_DIR`；xlsx 依赖 `openpyxl` | FILE 产物必须有真实路径。pandas 写 xlsx 需要引擎，不把 zip+xml 手写进工具 | 步骤 18 |
+| SearchTool 必注入 ES | 缺 `es_client` / `field_catalog` 时 `from_deps` 直接报错，不回落 Fake | 注入了目录却忘了换真实 ES 会被当成「查无数据」。步骤 25 的 runtime 必须显式传入客户端 | 步骤 18 |
+| KnowledgeMemory 只渲染 Markdown | 增 `list_indexes` / `has_index` / `get_index` / `field_names` | SearchTool 要结构化校验字段。实现 FieldCatalog Protocol，tool 层仍不 import memory | 步骤 18 |
+| `query_string` 自由检索 | 从 `SearchArgs` 删除 | 过滤/聚合走字段字典，自由字符串可以写任意字段，步骤 35 前先拿掉 | 步骤 18 |
+| `list_tools` 才看白名单 | `invoke` 同样校验；配置了 lookup 时必须传 `intent` 或 `allowed_tools` | CHAT 阶段直接 `invoke("search")` 仍能查数 | 步骤 17 |
+| Mock 只有 search/analysis | 增 `MockExportTool`（同名 `export`） | EXPORT 意图的 skill 白名单含 export，缺桩则 Mock 链路断 | 步骤 17 |
+| `call_structured` 只校验顶层 | 校验 `maxItems` / `minItems` 与嵌套 `required`；规划用 `PlanOutput` / `EmptyPlanOutput` | CHAT/UNKNOWN 的 `operations.maxItems: 0` 只写在 YAML 里拦不住模型 | 步骤 10 / 15 |
+| `_build_plan` 直接用 `skill.few_shots` | 走 `get_few_shots()` 再 `model_copy`，标 `scope=HISTORY` | 就地改 assembled messages 会污染 KnowledgeMemory 缓存 | 步骤 14 |
+| 执行预览缺 `result_ref` 回退窗口全部产物 | 只投喂 `result_ref` / `args.artifact_id`；没有则不预览 | 多表任务会把无关结果喂给模型 | 步骤 14 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
@@ -139,7 +157,7 @@ common / config
 | 里程碑 | 覆盖步骤 | 可验证成果 |
 | --- | --- | --- |
 | **M1 基础设施** | 1 – 8 | 配置/日志/异常/数据模型/存储抽象就绪，模型可序列化往返，Store 通过契约测试 |
-| **M2 四大模块** | 9 – 18 | LLMLayer、MemoryManager、ContextManager、ToolManager 各自可独立跑通单测与 Demo 脚本 |
+| **M2 四大模块** | 9 – 18 | LLMLayer、MemoryManager、ContextManager、ToolManager 各自可独立跑通单测与 Demo 脚本（`scripts/demo_m2.py`） |
 | **M3 单任务闭环** | 19 – 24 | 用 MockLLM + MockTool 在纯 Python 脚本中跑通 `created → completed` 全流程，含关联任务注入与写回 WorkingMemory |
 | **M4 服务可用** | 25 – 28 | Django 同步 REST 接口可用，支持多轮会话、多任务关联，前端可直接对接 |
 | **M5 流式与质量** | 29 – 32 | SSE 流式输出、任务取消、可观测性、测试覆盖率达标 |
@@ -412,7 +430,7 @@ common / config
       get_schemas(intent=None) -> list[dict]
       invoke(name, raw_args, ctx) -> ToolResult        # 参数校验 → 超时 → 异常封装 → 埋点
     ```
-  - `agent/tool_manage/tools/mock_search_tool.py`、`mock_analysis_tool.py`：读取 `tests/fixtures/*.json`，产出真实结构的 `Artifact`
+  - `agent/tool_manage/tools/mock_search_tool.py`、`mock_analysis_tool.py`、`mock_export_tool.py`：读取 fixture / 写 CSV 桩，产出真实结构的 `Artifact`
 - **验收**：单测验证参数校验失败返回 `ok=False` 且携带可读错误（而非抛出中断任务）、超时被正确中断、意图白名单过滤生效。
 
 ### 步骤 18：真实工具实例
@@ -424,7 +442,12 @@ common / config
   - `agent/tool_manage/tools/analysis_tool.py`：`AnalysisTool` —— 对已有 `artifact_id` 做聚合/排序/过滤/统计（pandas），输出新 Artifact，**不重复查询**
   - `agent/tool_manage/tools/export_tool.py`：`ExportTool` —— 把 Artifact 导出为 CSV/XLSX，返回 `FILE` 类 Artifact（含 `storage_ref`）
   - `agent/tool_manage/es_client.py`：`ESClient` 协议 + `FakeESClient`（本地测试）
-- **验收**：单测以 `FakeESClient` 验证 DSL 拼装正确、非法字段被拦截、`max_result_rows` 截断生效；`AnalysisTool` 对空结果集与类型异常有明确错误；导出文件可被正常打开。
+- **验收**：单测以 `FakeESClient` 验证 DSL 拼装正确、非法字段被拦截、`max_result_rows` 截断生效；`AnalysisTool` 对空结果集与类型异常有明确错误；导出文件可被正常打开。非 mock 且未注入 `es_client` / `field_catalog` 时构造失败。
+
+### M2 关门
+
+- **交付物**：`scripts/demo_m2.py` —— LLM / Memory / Context / Tool 四大模块各自独立跑通（MockLLM + MockTool + MemoryStore），退出码 0。
+- **验收**：`pytest` 四大模块套件独立全绿；`python scripts/demo_m2.py` 打印各模块 `[ok]`。覆盖率以单测为准，不阻塞本里程碑。
 
 ---
 

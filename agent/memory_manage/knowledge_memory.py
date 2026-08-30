@@ -87,6 +87,7 @@ class _Snapshot:
     skills: dict[IntentType, Skill]
     field_dict_all: str
     field_dict_by_index: dict[str, str]
+    indexes: dict[str, IndexDef]
 
 
 class KnowledgeMemory:
@@ -130,6 +131,22 @@ class KnowledgeMemory:
 
     def get_allowed_tools(self, intent: IntentType | str) -> list[str]:
         return list(self.get_skill(intent).allowed_tools)
+
+    def list_indexes(self) -> list[str]:
+        return sorted(self._snapshot.indexes)
+
+    def has_index(self, name: str) -> bool:
+        return name in self._snapshot.indexes
+
+    def get_index(self, name: str) -> IndexDef:
+        try:
+            return self._snapshot.indexes[name]
+        except KeyError:
+            known = self.list_indexes()
+            raise AgentMemoryError(f"字段字典没有索引 {name!r}；已有：{known}") from None
+
+    def field_names(self, index: str) -> frozenset[str]:
+        return frozenset(field.name for field in self.get_index(index).fields)
 
     def reload(self) -> None:
         """重新读盘并校验。失败时保留上一份快照，不会半更新。"""
@@ -276,4 +293,5 @@ def _load(root: Path) -> _Snapshot:
         skills=skills,
         field_dict_all=render_indexes(catalog),
         field_dict_by_index=by_index,
+        indexes={index.name: index for index in catalog},
     )

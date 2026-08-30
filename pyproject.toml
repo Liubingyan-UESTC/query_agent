@@ -44,6 +44,7 @@ known-first-party = ["agent", "app"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "ARG"]
+"scripts/**" = ["E402"]
 "**/__init__.py" = ["F401"]
 
 [tool.ruff.format]
@@ -65,6 +66,11 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["openai._extras.*"]
 follow_imports = "skip"
+
+# tiktoken 是可选依赖；pandas / openpyxl 未引入 stub
+[[tool.mypy.overrides]]
+module = ["tiktoken", "openpyxl", "pandas"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]

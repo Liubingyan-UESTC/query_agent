@@ -202,11 +202,37 @@ def _check_property(key: str, value: object, spec: dict[str, Any]) -> None:
     if allowed is not None and value not in allowed:
         raise ValueError(f"{key} 不在 {list(allowed)} 内")
     type_spec = spec.get("type")
-    if type_spec is None:
-        return
+    if type_spec is not None:
+        names = type_spec if isinstance(type_spec, list) else [type_spec]
+        if not any(_is_json_type(value, name) for name in names):
+            raise ValueError(f"{key} 期望类型 {type_spec}，实际是 {type(value).__name__}")
+
+    if isinstance(value, list):
+        _check_array(key, value, spec)
+    if isinstance(value, dict) and _looks_like_object_schema(spec):
+        _validate_object(value, spec)
+
+
+def _looks_like_object_schema(spec: dict[str, Any]) -> bool:
+    if spec.get("properties") or spec.get("required") or spec.get("additionalProperties") is False:
+        return True
+    type_spec = spec.get("type")
     names = type_spec if isinstance(type_spec, list) else [type_spec]
-    if not any(_is_json_type(value, name) for name in names):
-        raise ValueError(f"{key} 期望类型 {type_spec}，实际是 {type(value).__name__}")
+    return "object" in names
+
+
+def _check_array(key: str, value: list[object], spec: dict[str, Any]) -> None:
+    max_items = spec.get("maxItems")
+    if max_items is not None and len(value) > int(max_items):
+        raise ValueError(f"{key} 超过 maxItems={max_items}，实际 {len(value)}")
+    min_items = spec.get("minItems")
+    if min_items is not None and len(value) < int(min_items):
+        raise ValueError(f"{key} 少于 minItems={min_items}，实际 {len(value)}")
+    item_spec = spec.get("items")
+    if not isinstance(item_spec, dict):
+        return
+    for index, item in enumerate(value):
+        _check_property(f"{key}[{index}]", item, item_spec)
 
 
 def _is_json_type(value: object, spec: object) -> bool:

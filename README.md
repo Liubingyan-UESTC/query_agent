@@ -46,9 +46,13 @@ pytest
 ruff check .
 ruff format --check .           # 亦覆盖 README 内的 python 代码块
 mypy
+
+# 5. M2 Demo：LLM / Memory / Context / Tool 四大模块独立跑通（纯 Mock，无需密钥）
+python scripts/demo_m2.py
 ```
 
-Web 服务（`python app/manage.py runserver`）与命令行交互脚本（`python scripts/run_cli.py`）
+M2（步骤 9–18）已交付：单测与 `scripts/demo_m2.py` 均可独立跑通。
+Web 服务（`python app/manage.py runserver`）与多轮 CLI（`python scripts/run_cli.py`）
 分别在开发计划的步骤 26 与步骤 25 交付，当前尚未可用。
 
 ## 配置
@@ -130,6 +134,7 @@ query_agent/
 │   ├── tool_manage/        # 工具抽象、注册发现、调用管理与工具实例
 │   └── task_manage/        # 状态机、阶段处理器、终态收口、TaskManager
 ├── app/                    # Django 网络服务层（步骤 26 起）
+├── scripts/                # 不依赖 Django 的演示脚本（M2：`demo_m2.py`）
 ├── tests/                  # 单测 / 契约测试 / 端到端 / 接口测试
 └── docs/                   # 需求、开发计划、接口契约与部署文档
 ```

@@ -1,0 +1,26 @@
+{
+  "index": "logs-app",
+  "hits": [
+    {
+      "@timestamp": "2026-08-30T10:00:00Z",
+      "service": "query-agent",
+      "level": "ERROR",
+      "message": "timeout talking to es",
+      "status": 500
+    },
+    {
+      "@timestamp": "2026-08-30T10:01:00Z",
+      "service": "api-gateway",
+      "level": "ERROR",
+      "message": "upstream reset",
+      "status": 502
+    },
+    {
+      "@timestamp": "2026-08-30T10:02:00Z",
+      "service": "query-agent",
+      "level": "INFO",
+      "message": "intent resolved",
+      "status": 200
+    }
+  ]
+}
