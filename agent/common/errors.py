@@ -24,6 +24,7 @@ __all__ = [
     "LLMRateLimitError",
     "LLMResponseFormatError",
     "LLMTimeoutError",
+    "StoreError",
     "TaskCanceledError",
     "TaskStateError",
     "ToolError",
@@ -173,6 +174,17 @@ class ContextError(AgentError):
     """
 
     code = "context_error"
+    retryable = False
+
+
+class StoreError(AgentError):
+    """存储后端操作失败。
+
+    类级默认不可重试：类型不匹配、键格式非法属于程序契约问题。
+    Redis 连接/超时等瞬时故障在抛出时把 `retryable=True` 覆掉。
+    """
+
+    code = "store_error"
     retryable = False
 
 

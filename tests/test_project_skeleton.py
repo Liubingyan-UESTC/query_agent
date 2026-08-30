@@ -86,6 +86,15 @@ def test_models_layer_only_depends_on_common_and_config() -> None:
     assert not foreign, f"agent.models 只应依赖 common/config，实际额外拉入：{sorted(foreign)}"
 
 
+def test_store_layer_only_depends_on_common() -> None:
+    """Store 不依赖 models / config：值是不透明载荷，切换 Redis 时不应拖进 pydantic。"""
+    pulled = _imported_agent_modules("agent.store")
+    allowed = ("agent.common", "agent.store")
+    foreign = {name for name in pulled if not name.startswith(allowed)}
+
+    assert not foreign, f"agent.store 只应依赖 common，实际额外拉入：{sorted(foreign)}"
+
+
 def test_task_model_does_not_pull_in_task_manage() -> None:
     """验收：Task 对 manager 层零引用。重导出方向只能是 task_manage → models。"""
     pulled = _imported_agent_modules("agent.models.task")
