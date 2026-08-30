@@ -239,8 +239,9 @@ SDK 异常翻译为 `LLMTimeoutError` / `LLMRateLimitError` / `LLMError`，并�
 `MockLLMClient`，否则按 `profile_chain` 包一层 `ResilientLLMClient`。
 同一端点只对 `retryable=True` 指数退避；耗尽后再降级。`purpose` 只覆盖
 **主模型**的名字；备用端点用各自的 `profile.model`。调用方写死 `model`
-则整条链共用。`LLM_USE_MOCK=true` 返回裸 Mock，不包 Resilient。
-脚本化的 `LLMTimeoutError` 只能被消费一次，同客户端重试须用 callable。
+则整条链共用。超时在内层客户端，装饰器无总墙钟；流式只对首个 chunk
+创建失败降级，流出后中途断流不换端点。`LLM_USE_MOCK=true` 返回裸 Mock，
+不包 Resilient。脚本化的 `LLMTimeoutError` 只能被消费一次，同客户端重试须用 callable。
 
 `call_structured` 优先 `response_format=json_schema`，端点不支持则退回
 提示词约束 + JSON 提取；校验失败带错误重问一次，再失败抛

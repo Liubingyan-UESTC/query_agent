@@ -56,6 +56,10 @@
 | schema 未规定形态 | 接受 JSON Schema dict 或 `BaseModel`；对象级子集校验（required / type / enum / additionalProperties） | 不引入 `jsonschema` 依赖。嵌套结构留给 pydantic 模型；dict 路径只保证顶层字段不被脏数据写进 summary | 步骤 10 |
 | 「主模型失败按 fallbacks 降级」 | 仅 `retryable=True` 耗尽后才降级；不可重试立即抛出 | 400 / 鉴权失败换端点通常同样失败，却会把重试次数与费用乘到链长。超时/限流才值得换模型 | 步骤 10 |
 | purpose 路由写进整份 request 再共用 | `_bind_model` 按当前 profile 解析：`model_for(purpose)` 只覆盖主模型；备用端点用自己的 `profile.model` | 整条链钉死主模型名会变成「换了 base_url，还在要对方没有的名字」，降级等于没降 | 步骤 10 |
+| 装饰器做「超时控制」 | 超时在内层 `OpenAICompatClient(timeout=profile.timeout)`，装饰器无总墙钟 | 各端点 timeout 不同；总墙钟会让备用端点还没调用就被判超时 | 步骤 10 |
+| （流式失败如何降级未写清） | 只对首个 chunk 创建失败降级；流出后中途断流不换端点 | 已经吐出的 delta 无法撤回，换端点会让步骤 30 的 SSE 交错两路输出 | 步骤 10 |
+| `build_llm_client` 一律包 Resilient | `LLM_USE_MOCK=true` 返回裸 Mock | 本地无密钥只需脚本回放；测健壮性须像单测那样手工再包一层 | 步骤 10 |
+| Mock 异常可被重试多次（未写） | 异常实例消费后 `used` 不回滚 | `max_retries>=1` 却只 enqueue 一条超时时，第二次变成不可重试的「没有匹配」，降级链被截断。同客户端重试须用 callable 或每 attempt 一条 | 步骤 10 |
 | `WorkingMemory` 只写三个 namespace | 另增 List 键 `wm_index/task_ids` 记录写入顺序 | `keys()` 在 Redis 下无序，`trim` / `get_summary_history` 必须有稳定顺序，不能靠遍历键 | 步骤 11 |
 
 #### 取值域严格性（2026-08-30 定稿）
@@ -262,11 +266,11 @@ common / config
 - **依赖**：2, 3, 9
 - **目标**：满足需求中「配置多模型保持健壮性」，并保证阶段处理器能拿到可靠的结构化结果。
 - **交付物**：
-  - `agent/llm/resilient.py`：`ResilientLLMClient` 装饰 `BaseLLMClient` —— 超时控制、指数退避重试（仅对 `retryable=True` 的异常）、主模型失败按 `fallbacks` 顺序降级、按用途路由模型（intent/plan/execute）、调用埋点（模型、耗时、token、重试次数）
+  - `agent/llm/resilient.py`：`ResilientLLMClient` 装饰 `BaseLLMClient` —— 内层客户端按 `profile.timeout` 超时、指数退避重试（仅对 `retryable=True` 的异常）、主模型失败按 `fallbacks` 顺序降级。按用途路由只覆盖主模型（`_bind_model`：调用方未写死 `model` 时，index=0 用 `model_for(purpose)`，备用端点用各自的 `profile.model`）。调用埋点（模型、耗时、token、重试次数）。流式只对首个 chunk 创建失败降级。
   - `agent/llm/structured.py`：`call_structured(client, messages, schema, max_repair=1)` —— 优先用 `response_format=json_schema`，不支持时回退到「提示词约束 + JSON 提取 + 校验失败带错误信息重问一次」，最终失败抛 `LLMResponseFormatError`
-  - `agent/llm/mock_client.py`：`MockLLMClient`，支持按调用序号/匹配规则返回预设响应，并记录收到的完整 messages（后续所有阶段测试的基石）
-  - `agent/llm/factory.py`：`build_llm_client(settings)`
-- **验收**：单测覆盖「主模型超时 → 降级成功」「非 retryable 错误不重试」「JSON 修复重问一次成功」「全部失败抛错」；MockLLMClient 可断言收到的 prompt 内容。
+  - `agent/llm/mock_client.py`：`MockLLMClient`，支持按调用序号/匹配规则返回预设响应，并记录收到的完整 messages（后续所有阶段测试的基石）。脚本化异常实例只能消费一次。
+  - `agent/llm/factory.py`：`build_llm_client(settings)`。`LLM_USE_MOCK=true` 返回裸 Mock，不包 Resilient。
+- **验收**：单测覆盖「主模型超时 → 降级成功」「非 retryable 错误不重试也不降级」「JSON 修复重问一次成功」「全部失败抛错」；MockLLMClient 可断言收到的 prompt 内容；purpose 不把主模型名钉到备用端点。
 
 ### 步骤 11：MemoryManager —— WorkingMemory
 
@@ -456,7 +460,7 @@ common / config
 - **交付物**：`agent/task_manage/stages/intent.py`
   - 流程：置 `status=INTENDING` → 取 `WorkingMemory.get_summary_history(limit)` → `PromptAssembler.build_intent_prompt` → `call_structured(schema={intent, related_task_ids, reason, confidence})` → 校验 `intent` 在枚举内、`related_task_ids` 均存在于当前会话历史（不存在的静默丢弃并记警告）→ 写回 summary → `next_status=PLANNING`
   - 兜底：解析失败或置信度过低时 `intent=CHAT` 并记录降级原因（不直接失败）
-- **验收**：MockLLM 驱动的单测覆盖「识别为各意图」「返回关联任务」「返回不存在的关联任务被过滤」「解析失败降级为 CHAT」；断言投喂的 messages 只含 `content`/`status` 两个 summary 字段 + 历史摘要。
+- **验收**：MockLLM 驱动的单测覆盖「识别为各意图」「返回关联任务」「返回不存在的关联任务被过滤」「解析失败降级为 CHAT」；断言投喂的 messages 只含 `content`/`status` 两个 summary 字段 + 历史摘要。脚本化 `LLMTimeoutError` 只能消费一次，同客户端重试用 callable 或每 attempt 一条；`LLM_USE_MOCK=true` 时 factory 不包 Resilient，测健壮性须手工再包一层。
 
 ### 步骤 22：关联任务上下文注入
 
@@ -575,8 +579,8 @@ common / config
 - **交付物**：
   - `app/api/sse.py`：`GET /api/query/stream`（或 `POST /api/query` + `Accept: text/event-stream`）—— 后台线程/异步任务执行 `TaskManager.run`，主协程消费 `EventBus` 推送 SSE；心跳保活；客户端断开时触发 `cancel`
   - `POST /api/tasks/{task_id}/cancel`：写取消标志，阶段边界与工具调用超时点生效
-  - 执行阶段接入 `llm.stream_chat`，把 `llm_delta` 作为事件透传
-- **验收**：集成测试验证流式分块顺序与终止事件；取消请求后任务在 3 秒内进入 `CANCELED` 且不再产生新事件；客户端断开不留悬挂线程。
+  - 执行阶段接入 `llm.stream_chat`，把 `llm_delta` 作为事件透传。流式只对首个 chunk 创建失败降级，流出后中途断流不换端点（已经吐出的 delta 无法撤回，换端点会交错两路 SSE）
+- **验收**：集成测试验证流式分块顺序与终止事件；取消请求后任务在 3 秒内进入 `CANCELED` 且不再产生新事件；客户端断开不留悬挂线程。中途断流按错误事件结束，不另开备用端点续流。
 
 ### 步骤 31：可观测性
 
