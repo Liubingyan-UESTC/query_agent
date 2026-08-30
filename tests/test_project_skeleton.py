@@ -95,6 +95,23 @@ def test_store_layer_only_depends_on_common() -> None:
     assert not foreign, f"agent.store 只应依赖 common，实际额外拉入：{sorted(foreign)}"
 
 
+def test_memory_layer_only_depends_on_common_config_models_store() -> None:
+    """WorkingMemory 读写 Store 与模型；不得拉入 llm / tool / context_manage。"""
+    pulled = _imported_agent_modules("agent.memory_manage")
+    allowed = (
+        "agent.common",
+        "agent.config",
+        "agent.models",
+        "agent.store",
+        "agent.memory_manage",
+    )
+    foreign = {name for name in pulled if not name.startswith(allowed)}
+
+    assert not foreign, (
+        f"agent.memory_manage 只应依赖 common/config/models/store，实际额外拉入：{sorted(foreign)}"
+    )
+
+
 def test_llm_layer_only_depends_on_common_config_models() -> None:
     """LLM 与 memory / tool 互不依赖；请求体用 Message，配置用 LLMProfile。"""
     pulled = _imported_agent_modules("agent.llm")
