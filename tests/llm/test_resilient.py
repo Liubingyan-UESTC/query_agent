@@ -4,7 +4,7 @@ import pytest
 
 from agent.common.errors import LLMError, LLMTimeoutError
 from agent.config.settings import LLMProfile, LLMSettings
-from agent.llm.base import LLMRequest
+from agent.llm.base import LLMChunk, LLMRequest
 from agent.llm.mock_client import MockLLMClient
 from agent.llm.resilient import ResilientLLMClient
 from agent.models.message import Message
@@ -230,6 +230,51 @@ def test_stream_chat_uses_same_retry_policy() -> None:
     assert client.last_stats is not None
     assert client.last_stats.ok is True
     assert client.last_stats.fallback_index == 1
+
+
+def test_scripted_timeout_does_not_rollback_used() -> None:
+    """异常实例消费后 used 不回滚。只 enqueue 一条时，重试会变成不可重试的「没有匹配」。
+
+    步骤 21 以后同客户端重试必须用 callable，或给每个 attempt 各放一条。
+    """
+    primary = MockLLMClient([LLMTimeoutError("timeout")])
+    backup = MockLLMClient([MockLLMClient.reply("should-not-run")])
+    client = _client(
+        primary,
+        backup,
+        settings=_settings(max_retries=1, fallbacks=[LLMProfile(name="backup")]),
+    )
+
+    with pytest.raises(LLMError, match="没有匹配") as caught:
+        client.chat(LLMRequest(messages=[Message.user("q")]))
+
+    assert caught.value.retryable is False
+    assert backup.calls == []
+
+
+def test_stream_does_not_fallback_after_first_chunk() -> None:
+    """已经吐出的 delta 无法撤回，中途断流不换端点（步骤 30 SSE 依赖此约定）。"""
+
+    class CutOff(MockLLMClient):
+        def stream_chat(self, request: LLMRequest):  # type: ignore[override]
+            self.calls.append(request)
+            yield LLMChunk(content="Hel", model="main")
+            raise LLMTimeoutError("mid-stream")
+
+    backup = MockLLMClient([MockLLMClient.reply("backup")])
+    client = _client(
+        CutOff(),
+        backup,
+        settings=_settings(fallbacks=[LLMProfile(name="backup")]),
+    )
+
+    chunks: list[LLMChunk] = []
+    with pytest.raises(LLMTimeoutError, match="mid-stream"):
+        for chunk in client.stream_chat(LLMRequest(messages=[Message.user("q")])):
+            chunks.append(chunk)
+
+    assert [item.content for item in chunks] == ["Hel"]
+    assert backup.calls == []
 
 
 def test_rejects_empty_client_list() -> None:

@@ -13,6 +13,7 @@ def test_use_mock_returns_default_mock() -> None:
     client = build_llm_client(LLMSettings(use_mock=True))
 
     assert isinstance(client, MockLLMClient)
+    assert not isinstance(client, ResilientLLMClient)
 
 
 def test_use_mock_returns_injected_mock() -> None:
@@ -27,6 +28,7 @@ def test_use_mock_from_app_settings() -> None:
     client = build_llm_client(settings)
 
     assert isinstance(client, MockLLMClient)
+    assert not isinstance(client, ResilientLLMClient)
 
 
 def test_real_settings_wrap_openai_in_resilient() -> None:
