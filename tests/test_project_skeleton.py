@@ -124,6 +124,23 @@ def test_llm_layer_only_depends_on_common_config_models() -> None:
     assert not foreign, f"agent.llm 只应依赖 common/config/models，实际额外拉入：{sorted(foreign)}"
 
 
+def test_context_layer_only_depends_on_common_config_models_store() -> None:
+    """ContextManager 读写 Store 与窗口模型；不得拉入 llm / memory / tool / prompt。"""
+    pulled = _imported_agent_modules("agent.context_manage")
+    allowed = (
+        "agent.common",
+        "agent.config",
+        "agent.models",
+        "agent.store",
+        "agent.context_manage",
+    )
+    foreign = {name for name in pulled if not name.startswith(allowed)}
+
+    assert not foreign, (
+        f"agent.context_manage 只应依赖 common/config/models/store，实际额外拉入：{sorted(foreign)}"
+    )
+
+
 def test_task_model_does_not_pull_in_task_manage() -> None:
     """验收：Task 对 manager 层零引用。重导出方向只能是 task_manage → models。"""
     pulled = _imported_agent_modules("agent.models.task")
