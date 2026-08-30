@@ -250,7 +250,8 @@ def test_prompt_ref_rejects_surrounding_whitespace(tmp_path: Path) -> None:
         KnowledgeMemory(root)
 
 
-def test_skill_prompt_ref_can_point_to_extra_file(tmp_path: Path) -> None:
+def test_prompt_ref_unlisted_file(tmp_path: Path) -> None:
+    """`system_prompt_ref` 不必等于 `plan_<intent>.md`，不在必选集合里的文件也会加载。"""
     root = _clone(tmp_path)
     extra = root / "system_prompts" / "custom.md"
     extra.write_text("这是额外规划词\n", encoding="utf-8")
@@ -266,7 +267,7 @@ def test_skill_prompt_ref_can_point_to_extra_file(tmp_path: Path) -> None:
     assert "这是额外规划词" in memory.get_system_prompt(PromptStage.PLAN, IntentType.CHAT)
 
 
-def test_missing_extra_prompt_ref(tmp_path: Path) -> None:
+def test_prompt_ref_missing_file(tmp_path: Path) -> None:
     root = _clone(tmp_path)
     path = root / "skills" / "chat.yaml"
     path.write_text(
