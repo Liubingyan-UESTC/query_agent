@@ -237,8 +237,10 @@ SDK 异常翻译为 `LLMTimeoutError` / `LLMRateLimitError` / `LLMError`，并�
 
 `build_llm_client(settings)` 是装配入口：`LLM_USE_MOCK=true` 走
 `MockLLMClient`，否则按 `profile_chain` 包一层 `ResilientLLMClient`。
-同一端点只对 `retryable=True` 指数退避；耗尽后再降级。`purpose` 把
-intent / plan / execute 路由到对应模型名，显式 `model` 优先。
+同一端点只对 `retryable=True` 指数退避；耗尽后再降级。`purpose` 只覆盖
+**主模型**的名字；备用端点用各自的 `profile.model`。调用方写死 `model`
+则整条链共用。`LLM_USE_MOCK=true` 返回裸 Mock，不包 Resilient。
+脚本化的 `LLMTimeoutError` 只能被消费一次，同客户端重试须用 callable。
 
 `call_structured` 优先 `response_format=json_schema`，端点不支持则退回
 提示词约束 + JSON 提取；校验失败带错误重问一次，再失败抛
@@ -260,15 +262,33 @@ data = call_structured(
 )
 ```
 
+## WorkingMemory
+
+`WorkingMemory(session_id, store)` 按会话保存三部分历史：
+`task_summary_history` / `task_content_history` / `task_artifact_history`。
+`archive(window)` 只落 `scope=CURRENT` 的 content 与 artifacts；写入顺序记在
+独立 List 键上，不依赖 `keys()`。`trim(max_tasks)` 淘汰最旧任务。
+`get_task_bundle(task_id)` 是关联任务注入的唯一读口。不同 session 互不可见。
+
+```python
+from agent.memory_manage import WorkingMemory
+from agent.store import MemoryStore
+
+memory = WorkingMemory(session_id, MemoryStore())
+memory.archive(window)
+memory.get_summary_history(limit=10)
+summary, content, artifacts = memory.get_task_bundle(task_id)
+```
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 10**：
-LLM 降级重试、结构化输出与 Mock 客户端已交付。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 11**：
+WorkingMemory 已交付，LLM purpose 路由按当前 profile 解析。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
 | M1 基础设施 | 1 – 8 | 已完成 |
-| M2 四大模块 | 9 – 18 | 进行中（10/18） |
+| M2 四大模块 | 9 – 18 | 进行中（11/18） |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
 | M5 流式与质量 | 29 – 32 | 未开始 |

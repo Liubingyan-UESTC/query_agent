@@ -55,6 +55,8 @@
 | （未规定 purpose 放哪） | `LLMRequest.purpose` 可选 `intent / plan / execute` | 路由必须跟着请求走，否则 `call_structured` 与阶段处理器要另开一套签名。显式 `model` 优先于 purpose | 步骤 10 |
 | schema 未规定形态 | 接受 JSON Schema dict 或 `BaseModel`；对象级子集校验（required / type / enum / additionalProperties） | 不引入 `jsonschema` 依赖。嵌套结构留给 pydantic 模型；dict 路径只保证顶层字段不被脏数据写进 summary | 步骤 10 |
 | 「主模型失败按 fallbacks 降级」 | 仅 `retryable=True` 耗尽后才降级；不可重试立即抛出 | 400 / 鉴权失败换端点通常同样失败，却会把重试次数与费用乘到链长。超时/限流才值得换模型 | 步骤 10 |
+| purpose 路由写进整份 request 再共用 | `_bind_model` 按当前 profile 解析：`model_for(purpose)` 只覆盖主模型；备用端点用自己的 `profile.model` | 整条链钉死主模型名会变成「换了 base_url，还在要对方没有的名字」，降级等于没降 | 步骤 10 |
+| `WorkingMemory` 只写三个 namespace | 另增 List 键 `wm_index/task_ids` 记录写入顺序 | `keys()` 在 Redis 下无序，`trim` / `get_summary_history` 必须有稳定顺序，不能靠遍历键 | 步骤 11 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
