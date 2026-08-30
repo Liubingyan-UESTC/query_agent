@@ -221,15 +221,42 @@ artifact.preview(max_rows=5)
 键名由 `make_key(session_id, namespace, id)` 拼成 `agent:{session}:{ns}:{id}`，
 段内禁止冒号。TTL 惰性过期；读出的值是拷贝。KV 与 List 不能共用同一键。
 
+## LLM 客户端
+
+`agent/llm` 提供厂商无关的调用面。上层只依赖 `BaseLLMClient.chat` /
+`stream_chat`，不感知 OpenAI 或其它供应商。
+
+`LLMRequest.messages` 使用 `Message`：发出去之前统一走 `to_llm_dict()`，
+编排字段不会漏进载荷。`model` / `temperature` / `max_tokens` 留空时回落到
+`LLMProfile`。`chat()` 拒绝 `stream=True`，流式走 `stream_chat()`。
+
+`OpenAICompatClient` 基于 `openai` SDK 的兼容模式。SDK 自带重试钉死为 0——
+退避与降级属于步骤 10 的 `ResilientLLMClient`，两层各自重试会让次数变成乘法。
+SDK 异常翻译为 `LLMTimeoutError` / `LLMRateLimitError` / `LLMError`，并带上
+`retryable`。单测打桩 HTTP 层（不是 SDK 方法），以校验真实请求体。
+
+```python
+from agent.config import get_settings
+from agent.llm import LLMRequest, OpenAICompatClient
+from agent.models import Message
+
+client = OpenAICompatClient(get_settings().llm.primary)
+response = client.chat(LLMRequest(messages=[Message.user("查昨天的错误日志")]))
+response.content
+response.tool_calls
+response.usage.total_tokens
+```
+
 ## 开发进度
 
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M1（步骤 1–8）的步骤 8**：
-M1 基础设施已交付，模型可序列化往返、Store 通过契约测试。
+开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 9**：
+LLM 抽象与 OpenAI 兼容客户端已交付，HTTP 打桩测试覆盖请求拼装、响应解析、
+异常映射与流式分块顺序。
 
 | 里程碑 | 步骤 | 状态 |
 | --- | --- | --- |
 | M1 基础设施 | 1 – 8 | 已完成 |
-| M2 四大模块 | 9 – 18 | 未开始 |
+| M2 四大模块 | 9 – 18 | 进行中（9/18） |
 | M3 单任务闭环 | 19 – 24 | 未开始 |
 | M4 服务可用 | 25 – 28 | 未开始 |
 | M5 流式与质量 | 29 – 32 | 未开始 |

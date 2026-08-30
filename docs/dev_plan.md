@@ -48,6 +48,10 @@
 | `Artifact` 无 scope | 增加 `scope` / `source_task_id`，默认 `CURRENT`；非 CURRENT 必须带 `source_task_id` | `split_by_scope()` 必须同时切开产物。漏标来源会带着默认 CURRENT 被当成当前任务归档 | 步骤 7 |
 | `list_artifact_index()` 无过滤 | 默认只列 `CURRENT`，`scope=None` 才全量 | 步骤 28 的 `artifacts: [索引]` 若直接调用，会把关联任务的表暴露给前端 | 步骤 7 |
 | 存储异常未单列 | 新增 `StoreError` | 类型不匹配、键格式问题需要稳定 `code`，Redis 瞬时故障可按实例把 `retryable` 覆为 True | 步骤 8 |
+| （未规定 `usage` / `LLMChunk` 形状） | `TokenUsage{prompt_tokens, completion_tokens, total_tokens}`；`LLMChunk{content, tool_call_deltas, finish_reason, model}` | 裸 dict 会让步骤 10/30/31 各写各的键。流式 `tool_calls` 是增量碎片，不能收成完整 `ToolCall` | 步骤 9 |
+| SDK 默认 `max_retries=2` | `OpenAICompatClient` 把 SDK 重试钉死为 0 | 重试由步骤 10 的 `ResilientLLMClient` 独占；两层各自退避会让实际次数变成乘法 | 步骤 9 |
+| `chat(request)` 与 `stream` 字段关系未写 | `chat()` 拒绝 `request.stream=True` | SDK 在 `stream=True` 时返回 iterator，当成 `LLMResponse` 用会立刻炸且错误难读 | 步骤 9 |
+| （无） | HTTP 408 映射为 `LLMTimeoutError` | 兼容网关常用 408 表示超时，SDK 只把它收成普通 `APIStatusError`，不翻译就会被当成不可重试的请求拒绝 | 步骤 9 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
