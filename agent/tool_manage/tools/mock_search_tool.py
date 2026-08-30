@@ -48,8 +48,9 @@ class MockSearchTool(BaseTool):
         payload = _load_fixture(self.fixture_path)
         raw_hits = payload.get("hits")
         rows = list(raw_hits) if isinstance(raw_hits, list) else []
-        if payload.get("index") and payload["index"] != args.index:
-            rows = [row for row in rows if row.get("_index", args.index) == args.index]
+        fixture_index = payload.get("index")
+        if fixture_index and args.index != fixture_index:
+            return ToolResult.fail(ToolInvocationError(f"没有索引 {args.index}"))
         cap = min(args.limit, self._settings.max_result_rows)
         truncated = rows[:cap]
         schema = {str(key): "keyword" for key in (truncated[0] if truncated else {})}

@@ -11,6 +11,7 @@ from agent.context_manage.context_manager import (
     SUMMARY_WRITABLE_FIELDS,
     ContextManager,
 )
+from agent.context_manage.related_injector import InjectionReport, RelatedContextInjector
 from agent.context_manage.serializer import build_message_objects, build_messages
 from agent.context_manage.token_counter import (
     CharEstimateCounter,
@@ -42,7 +43,9 @@ __all__ = [
     "SUMMARY_WRITABLE_FIELDS",
     "CharEstimateCounter",
     "ContextManager",
+    "InjectionReport",
     "KnowledgeView",
+    "RelatedContextInjector",
     "SkillView",
     "StageAssembleOptions",
     "TiktokenCounter",

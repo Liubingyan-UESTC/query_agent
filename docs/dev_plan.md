@@ -90,6 +90,11 @@
 | `call_structured` 只校验顶层 | 校验 `maxItems` / `minItems` 与嵌套 `required`；规划用 `PlanOutput` / `EmptyPlanOutput` | CHAT/UNKNOWN 的 `operations.maxItems: 0` 只写在 YAML 里拦不住模型 | 步骤 10 / 15 |
 | `_build_plan` 直接用 `skill.few_shots` | 走 `get_few_shots()` 再 `model_copy`，标 `scope=HISTORY` | 就地改 assembled messages 会污染 KnowledgeMemory 缓存 | 步骤 14 |
 | 执行预览缺 `result_ref` 回退窗口全部产物 | 只投喂 `result_ref` / `args.artifact_id`；没有则不预览 | 多表任务会把无关结果喂给模型 | 步骤 14 |
+| `RelatedContextInjector(memory_manager, …)` | 读口为 Protocol `TaskBundleSource`（WorkingMemory 满足） | context_manage 不得 import memory | 步骤 22 |
+| `StageResult.error` / `StageDeps` 未写形状 | `error: ErrorInfo`；`StageDeps` 另持 `runtime` / `injector` | 异常对象不能进 Store；取消与护栏要跨阶段共享可变状态 | 步骤 20 |
+| Task 持久化未写 | Store 键 `session/tasks/{id}` + `global/task_index/{id}` | `get_task(task_id)` 只有 id，与窗口一样需要反查 session | 步骤 24 |
+| 规划 `expect` 写入 Operation | 校验后丢弃，不落 `Operation` | 现有 Operation 字段集已冻结；expect 只服务 LLM 输出校验 | 步骤 23 |
+| FAILED 归档策略未写配置 | `TASK_ARCHIVE_FAILED_CONTENT`（默认 false：只归档 summary） | 失败现场的 content 往往含半截工具错误，默认不进 WorkingMemory | 步骤 24 |
 
 #### 取值域严格性（2026-08-30 定稿）
 
@@ -158,7 +163,7 @@ common / config
 | --- | --- | --- |
 | **M1 基础设施** | 1 – 8 | 配置/日志/异常/数据模型/存储抽象就绪，模型可序列化往返，Store 通过契约测试 |
 | **M2 四大模块** | 9 – 18 | LLMLayer、MemoryManager、ContextManager、ToolManager 各自可独立跑通单测与 Demo 脚本（`scripts/demo_m2.py`） |
-| **M3 单任务闭环** | 19 – 24 | 用 MockLLM + MockTool 在纯 Python 脚本中跑通 `created → completed` 全流程，含关联任务注入与写回 WorkingMemory |
+| **M3 单任务闭环** | 19 – 24 | 用 MockLLM + MockTool 跑通 `created → completed`（`scripts/demo_m3.py` + `tests/e2e/test_single_task_flow.py`），含关联任务注入与写回 WorkingMemory |
 | **M4 服务可用** | 25 – 28 | Django 同步 REST 接口可用，支持多轮会话、多任务关联，前端可直接对接 |
 | **M5 流式与质量** | 29 – 32 | SSE 流式输出、任务取消、可观测性、测试覆盖率达标 |
 | **M6 生产化** | 33 – 36 | Redis/DB 落地、真实 ES 接入、容器化部署与文档交付 |
@@ -539,7 +544,7 @@ common / config
       get_task(task_id) / get_result(task_id)
     ```
     每次转移前 `assert_transition`，转移后写 `status_history` 并持久化
-- **验收**：**端到端脚本测试**（`tests/e2e/test_single_task_flow.py`）——MockLLM + MockTool 下跑通 `CREATED → COMPLETED` 全流程；跑通「第二个任务关联第一个任务」场景并断言注入内容未被重复归档；跑通失败/取消分支；断言非法状态跳转被状态机拦截。
+- **验收**：**端到端脚本测试**（`tests/e2e/test_single_task_flow.py`）——MockLLM + MockTool 下跑通 `CREATED → COMPLETED` 全流程；跑通「第二个任务关联第一个任务」场景并断言注入内容未被重复归档；跑通失败/取消分支；断言非法状态跳转被状态机拦截。`scripts/demo_m3.py` 覆盖同一闭环。
 
 ---
 

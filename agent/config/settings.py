@@ -225,6 +225,12 @@ class TaskSettings(_GroupSettings):
     max_tool_calls: int = Field(default=20, gt=0, description="单任务累计工具调用次数上限")
     max_replan: int = Field(default=2, ge=0, description="校验不通过后的重规划次数上限")
     max_duration_seconds: float = Field(default=300.0, gt=0, description="单任务总时长上限")
+    intent_min_confidence: float = Field(
+        default=0.4, ge=0.0, le=1.0, description="低于此置信度降级为 CHAT"
+    )
+    archive_failed_content: bool = Field(
+        default=False, description="FAILED/CANCELED 时是否归档 content/artifacts"
+    )
 
 
 # ============================================================ 存储

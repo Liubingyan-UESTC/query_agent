@@ -170,6 +170,14 @@ def test_tool_layer_only_depends_on_common_config_models() -> None:
     )
 
 
+def test_task_layer_does_not_depend_on_runtime_or_app() -> None:
+    pulled = _imported_agent_modules("agent.task_manage")
+    leaked = {
+        name for name in pulled if name.startswith("agent.runtime") or name.startswith("app.")
+    }
+    assert not leaked, f"agent.task_manage 不应拉入 runtime/app，实际拉入：{sorted(leaked)}"
+
+
 def test_task_model_does_not_pull_in_task_manage() -> None:
     """验收：Task 对 manager 层零引用。重导出方向只能是 task_manage → models。"""
     pulled = _imported_agent_modules("agent.models.task")

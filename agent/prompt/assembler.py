@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -33,9 +33,12 @@ __all__ = [
     "VALIDATE_OUTPUT_SCHEMA",
     "AssembledPrompt",
     "EmptyPlanOutput",
+    "ExecuteOutput",
+    "IntentOutput",
     "PlanOutput",
     "PlanStepOut",
     "PromptAssembler",
+    "ValidateOutput",
 ]
 
 CHAT_INTENTS: frozenset[IntentType] = frozenset({IntentType.CHAT, IntentType.UNKNOWN})
@@ -59,6 +62,25 @@ class EmptyPlanOutput(AgentModel):
     """CHAT / UNKNOWN：operations 必须是空列表。"""
 
     operations: list[PlanStepOut] = Field(default_factory=list, max_length=0)
+
+
+class IntentOutput(AgentModel):
+    intent: IntentType
+    related_task_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class ExecuteOutput(AgentModel):
+    status: Literal["continue", "done"]
+    conclusion: str
+
+
+class ValidateOutput(AgentModel):
+    satisfied: bool
+    missing: list[str] = Field(default_factory=list)
+    suggestion: str = ""
+    final_output: str = ""
 
 
 INTENT_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -170,6 +192,7 @@ class PromptAssembler:
             window,
             PromptStage.INTENT_RECOGNITION,
             output_schema=INTENT_OUTPUT_SCHEMA,
+            output_model=IntentOutput,
             purpose="intent",
             options=StageAssembleOptions(summary_history=summary_history),
         )
@@ -207,6 +230,7 @@ class PromptAssembler:
             PromptStage.EXECUTE,
             intent=window.summary.intent,
             output_schema=EXECUTE_OUTPUT_SCHEMA,
+            output_model=ExecuteOutput,
             purpose="execute",
             tools=[dict(item) for item in tool_schemas] if tool_schemas else None,
             options=StageAssembleOptions(operation=operation, tool_schemas=tool_schemas),
@@ -218,6 +242,7 @@ class PromptAssembler:
             PromptStage.VALIDATE,
             intent=window.summary.intent,
             output_schema=VALIDATE_OUTPUT_SCHEMA,
+            output_model=ValidateOutput,
             purpose=None,
         )
 
