@@ -60,6 +60,12 @@ warn_unreachable = true
 show_error_codes = true
 pretty = true
 
+# openai._extras.numpy_proxy 会把 numpy 的 pyi 拉进检查。numpy 2.x 的 stub
+# 使用了 3.12 的 `type` 语句，而本项目目标版本是 3.11，解析直接失败。
+[[tool.mypy.overrides]]
+module = ["openai._extras.*"]
+follow_imports = "skip"
+
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
 minversion = "8.0"
