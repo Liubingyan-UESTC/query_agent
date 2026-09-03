@@ -1,21 +1,11 @@
-# ---------- 网络服务 ----------
-django==6.1
-
 # ---------- LLM ----------
+# OpenAI 兼容模式客户端；重试与降级由 agent/llm 自己实现，不依赖 tenacity
 openai==3.6.0
-tenacity==9.1.4
 
 # ---------- 配置与数据模型 ----------
 pydantic==2.13.5
 pydantic-settings==2.15.0
 python-dotenv==1.2.3
-pyyaml==6.0.3
-types-PyYAML==6.0.12.20250915
-
-# ---------- 数据源与数据处理 ----------
-elasticsearch==9.5.0
-pandas==3.0.5
-openpyxl==3.1.5
 
 # ---------- 开发与质量门禁 ----------
 pytest==9.1.1
