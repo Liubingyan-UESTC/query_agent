@@ -1,10 +1,12 @@
-"""Query Agent —— 面向 Kibana/ES 数据查询与分析的 Agent 内核。
+"""Agent 系统的顶层包。
 
-本包只暴露版本号，不在此处导入任何子模块：
-子包之间存在严格单向依赖（common/config → models → store → llm/memory/tool
-→ context/prompt → task_manage → runtime），顶层聚合导入会破坏该约束。
+分层依赖（单向，禁止反向 import）::
+
+    errors / enums  →  models  →  {config, llm, tools}
+                                →  {context, memory, knowledge}
+                                →  task_manager  →  cli
 """
 
-__version__ = "1.0.0.dev0"
-
 __all__ = ["__version__"]
+
+__version__ = "1.0.0.dev0"

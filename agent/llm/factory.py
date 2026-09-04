@@ -1,15 +1,17 @@
-"""按配置装配 LLM 客户端。业务代码只走这一处，不手拼 OpenAI / Mock / 装饰器。"""
+"""模型客户端的装配入口。
+
+装配规则只有一条分支：**没配 key 就用 Mock**。这样控制台零配置即可跑通全链路，
+而配了 key 就自动切到真实端点 + 降级链。
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
-from agent.config.settings import AppSettings, LLMProfile, LLMSettings
+from agent.config import AppSettings, LLMProfile, LLMSettings
 from agent.llm.base import BaseLLMClient
 from agent.llm.mock_client import MockLLMClient
-from agent.llm.openai_client import OpenAICompatClient
-from agent.llm.resilient import ResilientLLMClient
+from agent.llm.openai_client import OpenAICompatClient, ResilientLLMClient
 
 __all__ = ["build_llm_client"]
 
@@ -21,20 +23,15 @@ def build_llm_client(
     *,
     mock: MockLLMClient | None = None,
     client_factory: ClientFactory | None = None,
-    sleeper: Callable[[float], None] | None = None,
-    http_client: Any | None = None,
 ) -> BaseLLMClient:
-    """`LLM_USE_MOCK=true` 时返回裸 Mock，不包 `ResilientLLMClient`。
+    """按配置构建客户端。
 
-    本地无密钥跑通链路够用；要测重试/降级必须像单测那样手工再包一层。
+    ``client_factory`` 是测试注入点：可以在不触网的情况下验证降级链的行为。
     """
     llm = settings.llm if isinstance(settings, AppSettings) else settings
-    if llm.use_mock:
+    if llm.use_mock_client():
         return mock if mock is not None else MockLLMClient()
 
-    def default_factory(profile: LLMProfile) -> BaseLLMClient:
-        return OpenAICompatClient(profile, http_client=http_client)
-
-    factory = client_factory or default_factory
+    factory: ClientFactory = client_factory or OpenAICompatClient
     clients = [factory(profile) for profile in llm.profile_chain()]
-    return ResilientLLMClient(clients, llm, sleeper=sleeper)
+    return ResilientLLMClient(clients, max_retries=llm.primary.max_retries)

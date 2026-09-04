@@ -1,110 +1,71 @@
-"""LLM 客户端抽象：请求 / 响应 / 分块与厂商无关的调用面。
+"""LLM 客户端的抽象接口与请求/响应结构。
 
-上层（阶段处理器、PromptAssembler）只依赖本模块，不感知 OpenAI / 其它供应商。
-`messages` 使用 `Message` 而非裸 dict：发出去之前统一走 `to_llm_dict()`，
-编排字段不会漏进载荷。
+只定义同步的 :meth:`BaseLLMClient.chat`——本系统的出口是控制台，一次任务只在最后打印
+最终结果，流式输出没有消费者，因此不引入 stream 接口。
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
-from agent.config.settings import LLMPurpose
-from agent.models.base import AgentModel
-from agent.models.message import Message, ToolCall
+from agent.models import AgentModel, Message, ToolCall
 
-__all__ = [
-    "BaseLLMClient",
-    "LLMChunk",
-    "LLMRequest",
-    "LLMResponse",
-    "TokenUsage",
-]
+__all__ = ["BaseLLMClient", "LLMRequest", "LLMResponse", "TokenUsage"]
 
 
 class TokenUsage(AgentModel):
-    """一次补全消耗的 token。键名对齐 OpenAI `usage` 对象。"""
-
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
 
 
 class LLMRequest(AgentModel):
-    """一次模型调用的入参。
+    """一次模型调用的全部输入。
 
-    `model` / `temperature` / `max_tokens` 为 `None` 时由客户端回落到
-    `LLMProfile` 的对应字段，避免每个调用方都复制一份默认值。
-    `stream` 只表达意图：`chat()` 拒绝 `True`，`stream_chat()` 始终流式，
-    避免把 iterator 当成 `LLMResponse` 使用。
+    ``model`` / ``temperature`` / ``max_tokens`` 留空表示"用 profile 里的默认值"，
+    这样调用方不必在每个阶段重复写一遍默认参数。
     """
 
     messages: list[Message]
+    tools: list[dict[str, Any]] | None = None
     model: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
-    tools: list[dict[str, Any]] | None = None
     response_format: dict[str, Any] | None = None
-    stream: bool = False
-    purpose: LLMPurpose | None = None
 
-    @field_validator("messages", mode="before")
-    @classmethod
-    def _coerce_messages(cls, value: object) -> object:
-        """允许传入已是 OpenAI 形状的 mapping，省掉调用方先包一层 Message。"""
-        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-            return value
-        coerced: list[object] = []
-        for index, item in enumerate(value):
-            if isinstance(item, Message):
-                coerced.append(item)
-            elif isinstance(item, Mapping):
-                coerced.append(Message.model_validate(item))
-            else:
-                raise ValueError(
-                    f"messages[{index}] 必须是 Message 或 mapping，实际是 {type(item).__name__}"
-                )
-        return coerced
+    stage: str | None = None
+    """当前所处的编排阶段（intent/plan/execute/validate）。
 
-
-class LLMChunk(AgentModel):
-    """`stream_chat` 的一个增量片。
-
-    流式 `tool_calls` 是按 token 切开的碎片（`id` / `name` / `arguments` 可能为
-    `None`），不能收成完整 `ToolCall`。调用方按 `index` 自行拼接，或走非流式 `chat()`。
+    只用于日志与 MockLLM 的启发式应答，**不参与真实模型路由**——按用途选模型会让
+    配置与状态机强耦合，收益不抵成本。
     """
 
-    content: str = ""
-    tool_call_deltas: list[dict[str, Any]] = Field(default_factory=list)
-    finish_reason: str | None = None
-    model: str | None = None
+    def to_llm_messages(self) -> list[dict[str, Any]]:
+        return [message.to_llm_dict() for message in self.messages]
 
 
 class LLMResponse(AgentModel):
-    """一次非流式补全的结果。"""
+    content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    finish_reason: str | None = None
+    model: str = ""
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    latency_ms: float = 0.0
 
-    content: str
-    tool_calls: list[ToolCall]
-    finish_reason: str | None
-    usage: TokenUsage
-    model: str
-    latency_ms: float
-    raw: dict[str, Any] | None = None
+    @property
+    def wants_tool(self) -> bool:
+        return bool(self.tool_calls)
 
 
 class BaseLLMClient(ABC):
-    """模型调用的唯一抽象。步骤 10 的装饰器与 Mock 都实现这一面。"""
+    """所有模型客户端的接口。"""
 
     @abstractmethod
     def chat(self, request: LLMRequest) -> LLMResponse:
-        """同步补全。`request.stream` 必须为 `False`。"""
+        """发起一次对话补全。失败时抛 :class:`~agent.errors.LLMError`。"""
 
-    @abstractmethod
-    def stream_chat(self, request: LLMRequest) -> Iterator[LLMChunk]:
-        """流式补全。分块顺序与供应商推送顺序一致。"""
-
-    def close(self) -> None:
-        """释放底层连接。默认无资源，具体实现按需覆盖。"""
-        return
+    def close(self) -> None:  # pragma: no cover - 默认无资源可释放
+        return None

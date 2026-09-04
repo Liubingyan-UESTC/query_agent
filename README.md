@@ -1,349 +1,289 @@
 # Query Agent
 
-面向 Kibana / Elasticsearch 的数据查询、分析与导出 Agent 系统。用户的一次自然语言请求即一个
-Task，系统以状态机驱动其经历「意图识别 → 规划 → 执行 → 校验 → 完成」的完整生命周期，
-并以黑板模式（Context Window）在各阶段之间传递上下文。
+面向 Kibana 风格日志的**查询 / 分析 Agent**。一次用户请求就是一个 Task，由状态机驱动
+走完「意图识别 → 规划 → 执行 → 校验」四个阶段；执行过程中的全部工作空间放在一块
+**黑板**（context window）上；已完成任务的黑板沉淀为**工作记忆**，供后续追问复用。
 
-- 需求说明：[`docs/require.md`](docs/require.md)
-- 开发计划与里程碑：[`docs/dev_plan.md`](docs/dev_plan.md)
+两个入口共用同一个内核：**控制台**（`python -m agent.cli`）与 **HTTP 服务**
+（Django，监听 7080）。`agent/` 不依赖 Django；`server/` 只是把内核包起来。
 
-## 核心概念
+设计与实现严格对齐 [`docs/require.md`](docs/require.md)。
 
-| 概念 | 说明 |
-| --- | --- |
-| **Task** | 用户的一次请求，拥有 `TaskStatus` 状态并由 `TaskManager` 驱动状态转移 |
-| **Context Window** | 单个任务的全部工作空间，由 `task_summary` + `task_content` + `task_artifacts` 三部分组成 |
-| **WorkingMemory** | 会话级历史记忆，与 Context 三部分一一对应，供意图识别与关联任务注入使用 |
-| **KnowledgeMemory** | 外置的固定知识（系统提示词、skill、字段字典），以资源文件维护 |
-| **Artifact** | 工具产出的结构化数据；大体积数据只进 artifacts，对话中仅保留 `artifact_id` + 预览 |
-
-## 环境要求
-
-- Python >= 3.11（开发容器使用 3.11，本地已验证 3.13）
-- 可选：Redis（步骤 33 起用于多进程会话共享）、Elasticsearch（步骤 35 起用于真实数据源）
-
-`.devcontainer/` 已纳入版本管理，用 VS Code / Cursor 打开容器即自动安装 `requirements.txt`。
-容器配置中不含任何密钥，敏感值统一以 `${localEnv:VAR}` 从宿主机环境读取（如 `ANTHROPIC_AUTH_TOKEN`）。
-
-## 本地启动
-
-```bash
-# 1. 创建并激活虚拟环境
-python -m venv .venv
-.venv\Scripts\activate          # Windows PowerShell
-# source .venv/bin/activate     # Linux / macOS
-
-# 2. 安装依赖
-pip install -r requirements.txt
-
-# 3. 准备环境变量
-copy .env.example .env          # Windows
-# cp .env.example .env          # Linux / macOS
-# 编辑 .env 填入 LLM_PRIMARY_API_KEY 等必填项；本地无密钥时可设 LLM_USE_MOCK=true
-
-# 4. 运行测试与静态检查（四项须全绿）
-pytest
-ruff check .
-ruff format --check .           # 亦覆盖 README 内的 python 代码块
-mypy
-
-# 5. M2 Demo：LLM / Memory / Context / Tool 四大模块独立跑通（纯 Mock，无需密钥）
-python scripts/demo_m2.py
-
-# 6. M3 Demo：MockLLM + MockTool 跑通 created → completed，含关联任务
-python scripts/demo_m3.py
+```
+控制台 / HTTP 请求
+   │
+   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ TaskManager（状态机）                                            │
+│  created → intenting → planning → executing → validating → done │
+│                 ↓                   ↑    ↓        ↓             │
+│             clarifying ─────────────┘ retrying ───┘             │
+│           （意图不明，问用户）      （限流退避） （不满足则补充执行）│
+└───┬────────────┬──────────────┬─────────────────┬───────────────┘
+    │            │              │                 │ emit(TaskEvent)
+    ▼            ▼              ▼                 ▼
+ContextManager ToolManager MemoryManager   ┌──────────────────────┐
+（黑板唯一入口）search/analysis WorkingMemory │ LoggingListener      │
+    │          /fetch_tool_result 三段历史   │  → logs/log.txt      │
+    ▼            │          + KnowledgeMemory│ DbListener           │
+┌──────────────────────┐    ▼                │  → SQLite 四张表     │
+│ ContextWindow（黑板） │ data/logs.json      └──────────────────────┘
+│  · task_summary      │（假数据库：80 条日志）
+│  · tool_result       │
+│  · task_content      │
+└──────────────────────┘
 ```
 
-M2（步骤 9–18）与 M3（步骤 19–24）已交付：单测与 `scripts/demo_m2.py` / `scripts/demo_m3.py` 可独立跑通。
-Web 服务（`python app/manage.py runserver`）与多轮 CLI（`python scripts/run_cli.py`）
-分别在开发计划的步骤 26 与步骤 25 交付，当前尚未可用。
+---
+
+## 快速开始
+
+### 控制台
+
+```bash
+pip install -r requirements.txt
+python -m agent.cli                 # 零配置即可运行（自动使用 MockLLM）
+```
+
+```
+你 > 查一下 order-service 的错误日志
+✅ 关键字 ERROR 命中 19 条，返回 19 条
+
+你 > 按服务统计刚才那批错误
+✅ 按 service 统计 count（共 19 条）：order-service=12，payment-service=5，gateway=1，user-service=1
+```
+
+其他用法：
+
+```bash
+python -m agent.cli --verbose              # 打印意图、步骤与工具调用
+python -m agent.cli --query "查 ERROR 日志"  # 只跑一条然后退出
+```
+
+控制台命令：`/help`、`/history`（本会话任务）、`/verbose`、`/exit`。
+
+### HTTP 服务
+
+```bash
+python manage.py migrate            # 建 SQLite 四张表（data/agent.sqlite3）
+python manage.py runserver 7080
+```
+
+```bash
+# 第一次不带凭证：响应头/Cookie/body 三处都会带回新的 session_id
+curl -si localhost:7080/api/chat -H 'Content-Type: application/json' \
+     -d '{"message":"查一下 order-service 的 ERROR 日志"}'
+
+# 后续请求带上凭证，追问「刚才那批」才能命中关联任务
+SID=sess_xxxxxxxxxxxx
+curl -s localhost:7080/api/chat -H "X-Session-Id: $SID" \
+     -H 'Content-Type: application/json' -d '{"message":"按服务统计刚才那批错误"}'
+
+curl -s localhost:7080/api/history -H "X-Session-Id: $SID"
+curl -s localhost:7080/api/health
+```
+
+用 Cookie 也一样（浏览器 / `curl -c/-b` 自动带）：
+
+```bash
+curl -sc /tmp/jar localhost:7080/api/health > /dev/null
+curl -sb /tmp/jar localhost:7080/api/chat -H 'Content-Type: application/json' \
+     -d '{"message":"查 ERROR 日志"}'
+```
+
+### 接入真实模型
+
+```bash
+cp .env.example .env      # 填入 LLM_API_KEY（以及可选的 BASE_URL / MODEL）
+```
+
+两个入口都会自动切到真实模型；未配置 key 时自动回落 MockLLM。推理模型（DeepSeek-R1、
+MiniMax、Qwen-thinking 等）内联在 `content` 里的 `<think>…</think>` 会被剥掉，不会进
+task summary、数据库和给用户的答复。
+
+---
+
+## 六个模块
+
+| 模块 | 文件 | 职责 |
+|---|---|---|
+| **配置** | `agent/config.py` | 全部可变参数的唯一入口。密钥用 `SecretStr` 从 `.env` 读；业务代码只调 `get_settings()`，禁止直读 `os.environ` |
+| **LLM** | `agent/llm/` | OpenAI 兼容客户端 + 重试/降级链 + 结构化输出 + MockLLM |
+| **TaskManager** | `agent/task_manager.py` | 状态机推进四个阶段，护栏与终态收尾，关键节点发事件 |
+| **ContextManager** | `agent/context.py` | 黑板（三项记录）的唯一写入通道，兼各阶段的提示词装配 |
+| **MemoryManager** | `agent/memory.py`、`agent/knowledge.py` | WorkingMemory 三段历史 + KnowledgeMemory（按意图组装的系统提示词） |
+| **ToolManager** | `agent/tools/` | 工具注册、发现、schema 生成与调用 |
+| **事件 / 日志** | `agent/events.py`、`agent/logging_setup.py` | 任务事件总线；日志双写与轮转 |
+| **网络层** | `server/` | Django：四张表、会话凭证、四个接口 |
+
+依赖方向是单向的：`errors/enums → models → {config, llm, tools} → {context, memory,
+knowledge} → task_manager → {cli, server}`。**`agent/` 不 import django**——内核可以被
+任何入口包起来，现有的 300+ 个内核测试也不必碰 Django。
+
+### 黑板：一次任务的全部工作空间
+
+`ContextWindow` 恰好三项记录，与 require.md 一一对应：
+
+| 记录 | 结构 | 说明 |
+|---|---|---|
+| `summary` | 8 个字段 | `task_id / content / intent / related_task_ids / operations / result / status / output` |
+| `tool_results` | `{tool_call_id: {tool_name, tool_result, ok}}` | 工具结果的**全量**存放处 |
+| `content` | `list[Message]` | system / user / assistant / tool 四种角色的完整对话 |
+
+**大结果不进上下文**：工具返回的全量数据写进 `tool_results`，回给模型的只是
+「一句概括 + 前 3 条样本 + tool_call_id」。模型需要完整数据时自己调
+`fetch_tool_result(tool_call_id)`——这个特殊工具的返回值直接进对话，**不再写回黑板**，
+否则同一份数据会在窗口里存两遍。
+
+### 工具
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `search_tool` | `keyword`、`limit` | 关键字在日志所有字段上做大小写不敏感子串匹配；空串返回全部 |
+| `analysis_tool` | `tool_call_id`、`group_by`、`metric`、`field`、`top` | 读黑板上某次检索的结果做分组统计（count / sum / avg / max / min） |
+| `fetch_tool_result` | `tool_call_id` | 取回某次调用的全量结果（内部工具，不落黑板） |
+
+数据源是 `data/logs.json`（80 条 Kibana 风格日志，字段见 `agent/knowledge.py` 的
+`KIBANA_FIELDS`）。换成真实 ES 时，只需替换 `SearchTool.run` 的取数实现，其余不动。
+
+### 记忆
+
+- **WorkingMemory**（会话级）：任务进终态时整窗归档进三段历史
+  `task_summary_history / tool_result_history / task_context_history`。
+  意图识别阶段回投摘要历史，模型据此判断「这次请求和哪个历史任务相关」；
+  规划阶段再按 `related_task_ids` 注入那些任务的对话。
+- **KnowledgeMemory**：按「阶段 × 意图」装配系统提示词。查询/统计类会带上日志字段说明，
+  闲聊类不带——省 token，也避免模型跑题。
+
+---
+
+## 网络服务（Django）
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/chat` | body `{"message": "..."}`。跑完一轮返回 `status / output / intent / operations / tool_calls`。上一轮若停在澄清态，本轮输入自动作为**补充说明续跑同一任务** |
+| `GET` | `/api/history` | 本会话的任务与消息（读 SQLite，不依赖进程内存） |
+| `GET` | `/api/tasks/<task_id>` | 单任务详情：summary 快照 + 消息 + 工具调用（只能看本会话的） |
+| `GET` | `/api/health` | 存活探测 + 当前实际装配的模型（真实还是 Mock）与工具清单 |
+
+### 会话凭证
+
+判断一次请求属于新会话还是已有会话，只看凭证：
+
+1. 依次找 `X-Session-Id` 请求头 → `agent_session` Cookie；
+2. **带了合法凭证** → 查（或建）对应会话，接着用；
+3. **带了非法凭证**（空串、随便一个字符串）→ 当作没带，发一个新的。放任客户端拿任意
+   字符串当主键，`sessions` 表会被垃圾键撑满；
+4. **没带** → 生成 `sess_xxxxxxxxxxxx` 建行，同时记下 `user_agent` 与 `ip`。
+
+响应侧 **header、Cookie、响应体三处都回写** session_id，curl / 浏览器 / 前端框架都能
+直接取用。
+
+### 数据库（SQLite，`data/agent.sqlite3`）
+
+四张表，`messages` 与 `tool_calls` 都是一条记录一行：
+
+| 表 | 字段 |
+|---|---|
+| `sessions` | `session_id`(pk) / `created_at` / `user_agent` / `ip` |
+| `tasks` | `task_id`(pk) / `session_id`(FK) / `status` / `intent` / `summary_json` / `created_at` / `updated_at` |
+| `messages` | `message_id`(pk) / `task_id`(FK) / `role` / `content` / `tool_call_id`(FK，可空) / `created_at` |
+| `tool_calls` | `call_id`(pk) / `task_id`(FK) / `tool_name` / `arguments_json` / `result_json` / `result_ref` / `status` / `created_at` |
+
+落库靠**事件监听器**（`server/api/listener.py`）：TaskManager 每次状态转移、每次工具调用
+都发一个事件，`DbListener` 订阅后写表。所以任务卡在哪一步、失败在哪一步，库里当场就能
+看到，不用等它跑完。**监听器出任何异常都不会影响任务本身**——落库失败不该让用户的查询挂掉。
+
+工具结果可能有几百条日志，全塞进 `result_json` 会让 `select *` 卡住。超过
+`SERVER_INLINE_RESULT_MAX_CHARS`（默认 4000 字符）的结果整份写到
+`data/tool_results/<call_id>.json`，表里 `result_json` 只留预览、`result_ref` 存路径。
+
+```bash
+sqlite3 data/agent.sqlite3 'select task_id, status, intent from tasks'
+sqlite3 data/agent.sqlite3 'select role, tool_call_id, substr(content,1,40) from messages'
+```
+
+**重启不恢复**：任务与黑板只活在内存里。重启后历史照样能查，但「正等着澄清」的任务会丢，
+用户重新提问即可。并发上，`run_turn` 用一把进程锁把任务执行串行化——本地测试服务的取舍。
+
+---
+
+## 日志
+
+```
+2026-09-04 00:51:31 | INFO    | agent.task   | planning   | 状态转移 intenting→planning：意图识别为 query task=task_62af session=sess_49a0
+2026-09-04 00:51:36 | INFO    | agent.tool   | executing  | 调用 search_tool → ok：关键字 order-service 命中 28 条 task=task_62af session=sess_49a0
+2026-09-04 00:51:51 | ERROR   | agent.task   | failed     | 任务结束（failed）：[failed] 未注册的工具：kibana_query task=task_ab12 session=sess_49a0
+```
+
+四列固定为**时间 | 级别 | 来源 | 任务状态 | 事件摘要**，正好是排查时要问的四个问题。
+第三列的任务状态随事件变化，用 `extra` 传入；Django 自己的日志没有这个字段，由一个
+`Filter` 补 `-`。摘要压成一行并截断（默认 300 字符），一个事件一行，`grep`/`tail` 才好用。
+
+- 同时输出到**控制台（stderr）**与 **`./logs/log.txt`**；目录不存在时自动创建；
+- `RotatingFileHandler` 按 `LOG_MAX_BYTES`（默认 2 MiB）轮转，保留 `LOG_BACKUP_COUNT`
+  （默认 5）个历史文件，日志不会无限膨胀；
+- 级别 `LOG_LEVEL` 支持 `DEBUG/INFO/WARNING/ERROR/CRITICAL`；
+- 控制台入口与 HTTP 入口**共用同一套配置**（`agent/logging_setup.py`）。Django 侧把
+  `LOGGING_CONFIG` 设为 `None` 后直接调 `setup_logging`，格式与轮转只有一处实现。
+
+---
 
 ## 配置
 
-全部可变参数集中声明在 `agent/config/settings.py`，业务代码只通过 `get_settings()` 读取，
-禁止直读 `os.environ`：
+全部键都是可选的，一个不填也能跑。完整清单见 [`.env.example`](.env.example)。
 
-```python
-from agent.config import get_settings
+| 组 | 关键项 |
+|---|---|
+| `LLM_` | `API_KEY`（**私密**，留空自动用 MockLLM）、`BASE_URL`、`MODEL`、`MAX_RETRIES`、`FALLBACKS`（降级链） |
+| `LOG_` | `LEVEL`、`DIR`、`FILE`、`MAX_BYTES`、`BACKUP_COUNT`、`TO_CONSOLE` |
+| `SERVER_` | 会话凭证的 header/Cookie 名、`INLINE_RESULT_MAX_CHARS`、`TOOL_RESULT_DIR` |
+| `CONTEXT_` | 历史摘要条数、关联任务注入条数、近 K 条对话 |
+| `MEMORY_` | `MAX_TASKS`（工作记忆保留的任务数） |
+| `TOOL_` | `DATA_FILE`、`MAX_ROWS`、预览行数与字符上限 |
+| `TASK_` | `MAX_STEPS`、`MAX_TOOL_CALLS`、`MAX_ROUNDS_PER_STEP`、`MAX_REVALIDATE`、`MAX_RETRY` |
 
-settings = get_settings()  # 进程级单例，启动时一次性确定
-settings.llm.model_for("intent")  # 按用途路由模型，未单独配置则回落主模型
-settings.context.token_budget()  # 按占比换算出的各部分 token 预算
+### 出错时的三条去向
+
+- `RETRYING`——执行阶段遇到可重试的临时错误（限流、网络抖动）：指数退避后重跑当前
+  步骤，已完成的步骤不会重来；重试次数用尽转 `FAILED`；
+- `FAILED`——不可恢复：模型反复给不出合法 JSON、调用了未注册的工具；
+- `ABORTED`——系统熔断：任一护栏耗尽（步骤数、工具调用数、单步轮数、重校验次数）。
+
+后两者都会把原因写进 `summary.output`，控制台原样展示。
+（注：`planning` 阶段的熔断落 `FAILED`——require.md 的转移表里 planning 没有到
+aborted 的边，实现宁可换个语义相近的终态，也不绕过状态机。同理，只有 `executing`
+有到 `retrying` 的边，所以其他阶段的临时错误直接判 `FAILED`。）
+
+---
+
+## 开发
+
+```bash
+python -m pytest -q                 # 374 个测试，全部离线（不触网、不碰真实模型）
+python -m pytest -q --cov           # 内核覆盖率 ~96%
+ruff check . && ruff format --check .
+mypy agent                          # strict（只管内核，见 pyproject 里的说明）
 ```
 
-环境变量命名为 `<组前缀>_<字段名>`，前缀与配置组一一对应：`APP_`、`LLM_`、`LLM_PRIMARY_`、
-`CONTEXT_`、`MEMORY_`、`TOOL_`、`TASK_`、`STORE_`、`ES_`、`TRACE_`；全部键名见 `.env.example`
-（有测试守护二者不漂移）。配置缺失或非法时抛出 `ConfigError`，错误信息直接指明环境变量名。
+测试分层：
 
-## 错误处理与日志
+| 文件 | 覆盖 |
+|---|---|
+| `test_enums.py` | 13 个状态的合法/非法转移与四个辅助属性 |
+| `test_models.py` | 黑板结构的不变量、OpenAI 协议约束、序列化往返 |
+| `test_config.py` | `.env` 读取、密钥不泄漏、单例、零配置回落 |
+| `test_llm.py` | MockLLM、结构化输出的三层降级、错误分类、重试与降级链、思维链剥离 |
+| `test_tools.py` | 三个工具的行为与 ToolManager 的错误收口 |
+| `test_context.py` | 黑板读写、预览策略、四个阶段的提示词装配 |
+| `test_memory.py` | 三段历史的归档、回投与淘汰 |
+| `test_task_manager.py` | 四个阶段、重试分支与全部异常分支 |
+| `test_events.py` | 事件序列与顺序、工具事件载荷、监听器故障隔离 |
+| `test_logging.py` | 目录自动创建、双写、轮转、级别、四列格式、幂等 |
+| `test_api.py` | 会话凭证（header/Cookie/非法值）、四张表落库、澄清续跑、四个接口 |
+| `test_e2e.py` | MockLLM 跑通 `created → completed`，含关联任务、澄清回合与控制台 |
 
-所有内部异常继承 `AgentError`，携带 `code`（机器可读、用于 API 响应与指标）、`message`、
-`retryable`、`detail` 四项。其中 `retryable` 是任务状态机在 `RETRYING` 与 `FAILED` 之间
-分流的唯一依据，也是 LLM 客户端决定是否退避重试的唯一依据：
-
-```python
-from agent.common import ToolTimeoutError, log_context, setup_logging, get_logger, new_trace_id
-
-setup_logging("INFO")  # 单行 JSON 输出到 stderr，可重复调用不叠加
-logger = get_logger(__name__)
-
-with log_context(trace_id=new_trace_id(), task_id="task_..."):
-    logger.info("开始执行", extra={"tool": "search_tool"})
-```
-
-`trace_id / session_id / task_id` 存放在 `contextvars` 中，由日志过滤器自动注入每条记录，
-业务代码无需层层传递；用 `contextvars` 而非 `threading.local` 是为了同时隔离线程与
-asyncio 任务，适配后续的 SSE 流式接口。记录 `AgentError` 时，`code` 与 `retryable`
-会一并落进日志，排查时无需回查代码即可判断任务为何走了重试分支。
-
-## 枚举取值域
-
-`agent/common/enums.py` 固化 `TaskStatus`、`IntentType`、`MessageRole`、`ArtifactType`、
-`OperationStatus`、`ContextScope`、`PromptStage` 七个取值域。全部继承 `StrEnum`，成员值即小写字符串，
-可直接 `json.dumps`，且 `TaskStatus.CREATED == "created"` 成立：
-
-```python
-from agent.common import IntentType
-
-IntentType("new_query")  # 只认规范拼写
-IntentType.values()  # 供 JSON Schema 的 enum 约束
-IntentType.from_str(raw)  # 解析失败抛 ValueError，消息内含合法取值列表
-IntentType.from_str(raw, default=IntentType.UNKNOWN)  # 调用方显式选择的兜底
-```
-
-取值域是**严格**的：`IntentType("NEW-QUERY")`、`IntentType("newQuery")`、
-`IntentType("analisis")` 全部抛 `ValueError`。不做归一化、不设别名表是有意为之——
-把错误拼写猜成正确成员会掩盖真正的缺陷（提示词写错、前端传错字段、模型不遵守
-schema），而猜测规则本身会长期膨胀并需要维护。
-
-约束模型输出的正确位置是产出端：用 `values()` 生成 JSON Schema 的 enum 约束。
-解析失败时的 `ValueError` 已带合法取值列表，可直接回灌重试提示词。
-旧的 `agent/task_manage/type.py` 保留为兼容重导出层，只提供 `TaskType` 类别名。
-
-## 目录说明
-
-```
-query_agent/
-├── agent/                  # Agent 内核（不依赖 Web 框架，可独立以脚本驱动）
-│   ├── common/             # 枚举、异常体系、结构化日志、ID 生成、指标与追踪
-│   ├── config/             # 配置中心，全部可变参数的唯一声明处
-│   ├── models/             # 纯数据模型：Message / Artifact / TaskSummary / Task / ContextWindow
-│   ├── store/              # 存储抽象与内存实现（后续可换 Redis / DB，业务代码不改）
-│   ├── llm/                # LLM Layer：OpenAI 兼容客户端、降级重试、结构化输出、Mock
-│   ├── memory_manage/      # WorkingMemory 与 KnowledgeMemory
-│   ├── knowledge/          # 知识资源文件：系统提示词 / skill / 字段字典
-│   ├── context_manage/     # Context Window 生命周期、预算裁剪、关联任务注入
-│   ├── prompt/             # 各阶段提示词装配
-│   ├── tool_manage/        # 工具抽象、注册发现、调用管理与工具实例
-│   └── task_manage/        # 状态机、阶段处理器、终态收口、TaskManager
-├── app/                    # Django 网络服务层（步骤 26 起）
-├── scripts/                # 不依赖 Django 的演示脚本（`demo_m2.py` / `demo_m3.py`）
-├── tests/                  # 单测 / 契约测试 / 端到端 / 接口测试
-└── docs/                   # 需求、开发计划、接口契约与部署文档
-```
-
-## 分层依赖约束
-
-依赖方向严格单向，反向引用视为架构违规：
-
-```
-common / config → models → store → { llm, memory_manage, tool_manage }
-    → context_manage ← prompt → task_manage → runtime → app
-```
-
-其余需在 Code Review 中守护的关键不变式（黑板单一写入通道、大数据不入对话、注入内容不归档、
-状态转移唯一裁判等）见 [`docs/dev_plan.md`](docs/dev_plan.md) 第四节。
-
-## 消息与产物模型
-
-`agent/models/` 是纯数据层，只依赖 `common` / `config`，不含任何业务策略。
-
-`Message` 同时承载协议字段与编排字段，二者读者不同，故分两个出口：`to_llm_dict()`
-只输出 OpenAI messages 规范允许的键（`role` / `content` / `name` / `tool_calls` /
-`tool_call_id`），而 `message_id`、`artifact_refs`、`scope`、`source_task_id`、
-`created_at`、`meta` 只服务于 ContextManager，绝不进入发给模型的载荷——否则既浪费
-token，又会诱导模型模仿这些字段作答。
-
-`Artifact` 存在的理由是隔离体积。一次 ES 查询可能回来上万行，若直接进 `task_content`，
-上下文窗口会被单次结果打满且每轮都要重投一遍。因此全量数据留在 `data`（或
-`storage_ref` 指向的外部存储），进入提示词的只有 `artifact_id` 与 `preview()` 摘要：
-
-```python
-artifact.preview(max_rows=5)
-# [table] 查询结果 (artifact_id=art_...) 共 200000 行
-# col0 | col1 | col2
-# r0c0 | r0c1 | r0c2
-# ...
-# （另有 199995 行未显示，凭 artifact_id 可取全量）
-```
-
-`preview()` 在行数、单元格宽度、总字符数三个维度都设了硬上限，否则上述约定形同虚设：
-20 万行、3 列的表格摘要实测 217 字符；500 列的极端表格会被总字符上限截断在 1200 字符。
-
-两个模型都继承 `AgentModel`，统一提供 `to_dict()`（`mode="json"`，datetime 与枚举
-已转为字符串，可直接 `json.dumps`）与 `from_dict()`，并统一开启 `extra="forbid"`
-与 `validate_assignment=True`——未知字段被静默丢弃时，现象是「值莫名变成默认值」，
-排查成本远高于当场报错。
-
-## TaskSummary 与 Task
-
-`TaskSummary` 的字段集与需求文档一致，命名按开发计划 1.2 节修正：`related_task_ids`
-而不是 `related task`。`to_prompt_dict(fields)` 按白名单投影——意图识别阶段用
-`INTENT_PROMPT_FIELDS`（`content` + `status`），避免把尚未发生的 operations 或
-失败现场的 `output` 投喂给模型。空列表与未知字段名一律拒绝。
-
-`Task` 只做数据访问：`create()` 要求显式传入 `session_id`（漏传会让每个请求变成
-独立会话，WorkingMemory 静默失效）；`touch()` 刷新 `updated_at`；改状态只能走
-`record_status()`——直接赋 `Task.status` 或 `summary.status` 都会被拦住，避免归档后
-出现「实体已完成、摘要仍显示 intending」。**转移是否合法不在此处裁定**。
-
-`error` 的类型是 `ErrorInfo`（`code` / `message` / `retryable` / `detail`），与
-`AgentError.to_dict()` 键集合一致，供落盘、状态机分流和步骤 26 的 HTTP 错误响应共用。
-`operations` 的 `index` 必须从 0 按列表顺序连续递增，这样 `operation(i)` 与执行循环
-的列表遍历是同一种解读。
-
-规范定义在 `agent/models/task.py`；`agent/task_manage/task.py` 只是兼容重导出。
-
-## Context Window
-
-`ContextWindow` 把 `summary`、`content`、`artifacts` 聚合成一块黑板，只提供容器操作：
-`append_message`、`get_messages`、`put_artifact`、`get_artifact`、`list_artifact_index`、
-`split_by_scope`。裁剪预算、写回 WorkingMemory 的策略不在这里。
-
-`split_by_scope()` 按 `Message.scope` / `Artifact.scope` 切开。写回只应取
-`CURRENT`；`RELATED`（关联任务注入）和 `HISTORY`（历史片段）参与推理但不归档，
-否则会话记忆会随轮次指数膨胀。
-
-注入片段必须带 `source_task_id`；`scope=current` 的产物必须属于本窗口的
-`task_id`。`list_artifact_index()` 默认只列 `CURRENT`，避免步骤 28 把关联表
-暴露给前端。`get_messages()` 始终返回新列表。`record_status()` 之后必须
-`bind_summary(task.summary)`，否则窗口里仍是过期摘要。
-
-## 存储
-
-`agent/store` 提供 `KVStore` / `ListStore` 抽象与线程安全的 `MemoryStore`。
-业务代码只依赖抽象：`get` / `set` / `delete` / `exists` / `keys` / `expire` 与
-`push` / `range` / `trim` / `length`。语义对齐 Redis（闭区间、负下标），
-步骤 27 的 Redis 实现加入 `STORE_FACTORIES` 后整份契约测试自动覆盖。
-
-键名由 `make_key(session_id, namespace, id)` 拼成 `agent:{session}:{ns}:{id}`，
-段内禁止冒号。TTL 惰性过期；读出的值是拷贝。KV 与 List 不能共用同一键。
-
-## LLM 客户端
-
-`agent/llm` 提供厂商无关的调用面。上层只依赖 `BaseLLMClient.chat` /
-`stream_chat`，不感知 OpenAI 或其它供应商。
-
-`LLMRequest.messages` 使用 `Message`：发出去之前统一走 `to_llm_dict()`，
-编排字段不会漏进载荷。`model` / `temperature` / `max_tokens` 留空时回落到
-`LLMProfile`。`chat()` 拒绝 `stream=True`，流式走 `stream_chat()`。
-
-`OpenAICompatClient` 基于 `openai` SDK 的兼容模式。SDK 自带重试钉死为 0——
-退避与降级由 `ResilientLLMClient` 独占，两层各自重试会让次数变成乘法。
-SDK 异常翻译为 `LLMTimeoutError` / `LLMRateLimitError` / `LLMError`，并带上
-`retryable`。单测打桩 HTTP 层（不是 SDK 方法），以校验真实请求体。
-
-`build_llm_client(settings)` 是装配入口：`LLM_USE_MOCK=true` 走
-`MockLLMClient`，否则按 `profile_chain` 包一层 `ResilientLLMClient`。
-同一端点只对 `retryable=True` 指数退避；耗尽后再降级。`purpose` 只覆盖
-**主模型**的名字；备用端点用各自的 `profile.model`。调用方写死 `model`
-则整条链共用。超时在内层客户端，装饰器无总墙钟；流式只对首个 chunk
-创建失败降级，流出后中途断流不换端点。`LLM_USE_MOCK=true` 返回裸 Mock，
-不包 Resilient。脚本化的 `LLMTimeoutError` 只能被消费一次，同客户端重试须用 callable。
-
-`call_structured` 优先 `response_format=json_schema`，端点不支持则退回
-提示词约束 + JSON 提取；校验失败带错误重问一次，再失败抛
-`LLMResponseFormatError`。`MockLLMClient` 按序号或 `when` 谓词回放，
-并记录完整 messages，供后续阶段断言 prompt。
-
-```python
-from agent.config import get_settings
-from agent.llm import LLMRequest, build_llm_client, call_structured
-from agent.models import Message
-
-client = build_llm_client(get_settings())
-response = client.chat(LLMRequest(messages=[Message.user("查昨天的错误日志")]))
-data = call_structured(
-    client,
-    [Message.user("查昨天的错误日志")],
-    {"type": "object", "required": ["intent"], "properties": {"intent": {"type": "string"}}},
-    purpose="intent",
-)
-```
-
-## WorkingMemory
-
-`WorkingMemory(session_id, store)` 按会话保存三部分历史：
-`task_summary_history` / `task_content_history` / `task_artifact_history`。
-`archive(window)` 只落 `scope=CURRENT` 的 content 与 artifacts；写入顺序记在
-独立 List 键上，不依赖 `keys()`。`trim(max_tasks)` 淘汰最旧任务。
-`get_task_bundle(task_id)` 是关联任务注入的唯一读口。不同 session 互不可见。
-
-```python
-from agent.memory_manage import WorkingMemory
-from agent.store import MemoryStore
-
-memory = WorkingMemory(session_id, MemoryStore())
-memory.archive(window)
-memory.get_summary_history(limit=10)
-summary, content, artifacts = memory.get_task_bundle(task_id)
-```
-
-## KnowledgeMemory
-
-固定知识外置为 Markdown / YAML，改提示词不改代码。`KnowledgeMemory()` 默认读取
-`agent/knowledge`：`system_prompts/`、`skills/<intent>.yaml`、`schemas/kibana_fields.yaml`。
-五个 `IntentType` 都必须有 skill。构造与 `reload()` 做完整校验，缺文件或缺引用抛
-`AgentMemoryError`，不静默降级。`reload()` 失败时保留上一份快照。
-
-`get_system_prompt(stage, intent=None)` 的 `stage` 是 `PromptStage`
-（`intent_recognition` / `plan` / `execute` / `validate`），恒把 `base.md` 放在阶段词前面。
-规划阶段必须带 intent，正文走该 skill 的 `system_prompt_ref`。
-`get_field_dict()` 渲染为稳定 Markdown；未知索引直接报错。
-
-`MemoryManager(store)` 是上层入口：`working(session_id)` 与 `.knowledge`。
-`LLM_USE_MOCK` 与知识资源无关，本地无密钥仍加载同一套文件。
-
-```python
-from agent.common import IntentType, PromptStage
-from agent.memory_manage import MemoryManager
-from agent.store import MemoryStore
-
-manager = MemoryManager(MemoryStore())
-prompt = manager.knowledge.get_system_prompt(PromptStage.PLAN, IntentType.NEW_QUERY)
-tools = manager.knowledge.get_allowed_tools("new_query")
-fields = manager.knowledge.get_field_dict("logs-app")
-```
-
-## ContextManager
-
-`ContextManager` 是黑板的唯一写入通道。创建窗口后 `status=CREATED`，第一条消息是
-system。`update_summary` 只接受 `intent` / `related_task_ids` / `operations` /
-`result` / `output`；`status`、用户原文 `content` 和脏字段一律拒绝。
-`add_artifact` 把全量放入 artifacts，content 只追加引用与 `preview()`。
-`inject_segment` 只写入 RELATED / HISTORY。`snapshot` 给调试和 SSE 用，不含
-`artifact.data`。活窗口按 `task_id` 索引，不走 WorkingMemory。
-
-```python
-from agent.context_manage import ContextManager
-from agent.store import MemoryStore
-
-mgr = ContextManager(MemoryStore())
-window = mgr.create_window(task_id, session_id, query, system_prompt)
-mgr.update_summary(task_id, intent="new_query")
-mgr.add_artifact(task_id, artifact)
-```
-
-## 开发进度
-
-开发计划共 36 个步骤、6 个里程碑。**当前完成到 M2 的步骤 13**：
-ContextManager 窗口生命周期已交付。
-
-| 里程碑 | 步骤 | 状态 |
-| --- | --- | --- |
-| M1 基础设施 | 1 – 8 | 已完成 |
-| M2 四大模块 | 9 – 18 | 进行中（13/18） |
-| M3 单任务闭环 | 19 – 24 | 未开始 |
-| M4 服务可用 | 25 – 28 | 未开始 |
-| M5 流式与质量 | 29 – 32 | 未开始 |
-| M6 生产化 | 33 – 36 | 未开始 |
+测试一律不读项目根的 `.env`（`env_file=None`）、不触网（MockLLM）、数据文件与日志目录
+指向临时目录，因此结果只取决于用例本身。
