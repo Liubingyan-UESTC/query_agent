@@ -3,7 +3,12 @@
 from agent.llm.base import BaseLLMClient, LLMRequest, LLMResponse, TokenUsage
 from agent.llm.factory import build_llm_client
 from agent.llm.mock_client import MockLLMClient
-from agent.llm.openai_client import OpenAICompatClient, ResilientLLMClient, translate_openai_error
+from agent.llm.openai_client import (
+    OpenAICompatClient,
+    ResilientLLMClient,
+    strip_reasoning,
+    translate_openai_error,
+)
 from agent.llm.structured import call_structured, extract_json
 
 __all__ = [
@@ -17,5 +22,6 @@ __all__ = [
     "build_llm_client",
     "call_structured",
     "extract_json",
+    "strip_reasoning",
     "translate_openai_error",
 ]

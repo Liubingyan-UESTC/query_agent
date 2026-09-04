@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -19,7 +20,12 @@ from agent.errors import LLMError
 from agent.llm.base import BaseLLMClient, LLMRequest, LLMResponse, TokenUsage
 from agent.models import ToolCall
 
-__all__ = ["OpenAICompatClient", "ResilientLLMClient", "translate_openai_error"]
+__all__ = [
+    "OpenAICompatClient",
+    "ResilientLLMClient",
+    "strip_reasoning",
+    "translate_openai_error",
+]
 
 # 异常 detail 的截断长度：SDK 有时会把整个响应体塞进 message，日志会被撑爆
 _DETAIL_LIMIT = 500
@@ -100,6 +106,26 @@ def _default_client(profile: LLMProfile) -> Any:
     )
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_ORPHAN_THINK_END_RE = re.compile(r"^.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning(content: str) -> str:
+    """去掉推理模型内联在 content 里的思维链。
+
+    DeepSeek-R1、MiniMax、Qwen-thinking 这类模型会把推理过程夹在
+    ``<think>…</think>`` 里一起返回。这段内容不该进 task summary、不该进数据库，
+    更不该出现在给用户的答复里——它既长又会暴露中间猜测。
+
+    两条规则覆盖实际见到的形态：成对的块整段删；只剩一个收尾 ``</think>``（模型漏了开
+    标签）时，把它之前的全部内容都当成推理丢掉。
+    """
+    cleaned = _THINK_BLOCK_RE.sub("", content)
+    if "</think>" in cleaned.lower():
+        cleaned = _ORPHAN_THINK_END_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
 def _parse_completion(completion: Any, *, latency_ms: float) -> LLMResponse:
     """把 SDK 对象收成自有的 :class:`LLMResponse`。"""
     payload = (
@@ -120,7 +146,8 @@ def _parse_completion(completion: Any, *, latency_ms: float) -> LLMResponse:
 
     usage_payload = payload.get("usage") or {}
     return LLMResponse(
-        content=message.get("content") or "",
+        # reasoning_content 字段（另一种推理输出形态）直接忽略，不并入 content
+        content=strip_reasoning(message.get("content") or ""),
         tool_calls=tool_calls,
         finish_reason=choice.get("finish_reason"),
         model=payload.get("model") or "",

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +32,7 @@ from agent.config import AppSettings
 from agent.context import ContextManager, ContextWindow
 from agent.enums import IntentType, OperationStatus, TaskStatus
 from agent.errors import AgentError, TaskStateError
+from agent.events import EventKind, TaskEvent, TaskListener, emit_all
 from agent.knowledge import KnowledgeMemory
 from agent.llm import BaseLLMClient, LLMRequest, build_llm_client, call_structured
 from agent.memory import MemoryManager
@@ -95,6 +96,7 @@ class TaskManager:
         context: ContextManager,
         memory: MemoryManager,
         tools: ToolManager,
+        listeners: Sequence[TaskListener] = (),
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self.settings = settings
@@ -102,6 +104,7 @@ class TaskManager:
         self.context = context
         self.memory = memory
         self.tools = tools
+        self._listeners = tuple(listeners)
         self._sleep = sleeper or time.sleep
 
         self._tasks: dict[str, Task] = {}
@@ -120,6 +123,12 @@ class TaskManager:
         self._tool_calls[task.task_id] = 0
         self._revalidations[task.task_id] = 0
         self._retries[task.task_id] = 0
+        self._emit(
+            EventKind.TASK_CREATED,
+            task,
+            summary=f"任务已创建：{content}",
+            payload={"content": content},
+        )
         return task
 
     def task(self, task_id: str) -> Task:
@@ -131,6 +140,17 @@ class TaskManager:
     def window(self, task_id: str) -> ContextWindow:
         self.task(task_id)
         return self._windows[task_id]
+
+    def pending_clarification(self, session_id: str) -> Task | None:
+        """本会话里正等待澄清的任务（正常最多一个）。
+
+        前端靠它判断"这一轮输入是新问题，还是上一轮追问的答案"——控制台与 HTTP 层都需要
+        这个判断，所以放在内核而不是各自实现一遍。
+        """
+        for task in reversed(self._tasks.values()):
+            if task.session_id == session_id and task.status is TaskStatus.CLARIFYING:
+                return task
+        return None
 
     def run(self, task_id: str) -> Task:
         """推进任务，直到进入终态或需要用户输入（CLARIFYING）。
@@ -154,7 +174,7 @@ class TaskManager:
         window = self._windows[task_id]
         self.context.amend_user_request(window, supplement)
         self.context.update_summary(window, output=None)
-        task.transition_to(TaskStatus.INTENTING)
+        self._transition(task, TaskStatus.INTENTING, note="用户补充信息后重新识别意图")
         return self.run(task_id)
 
     def cancel(self, task_id: str, reason: str = "用户取消") -> Task:
@@ -164,13 +184,59 @@ class TaskManager:
         self._terminate(task, TaskStatus.CANCELED, reason)
         return task
 
+    # ================================================================ 事件
+
+    def _emit(
+        self,
+        kind: EventKind,
+        task: Task,
+        *,
+        summary: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        emit_all(
+            self._listeners,
+            TaskEvent(
+                kind=kind,
+                task_id=task.task_id,
+                session_id=task.session_id,
+                status=task.status,
+                summary=summary,
+                payload=payload or {},
+                window=self._windows.get(task.task_id),
+            ),
+        )
+
+    def _transition(self, task: Task, target: TaskStatus, *, note: str = "") -> None:
+        """状态机推进的**唯一**入口：转移 + 发事件。
+
+        全部转移点都走这里，"每次状态转移都留下一条日志与一条库记录"就由结构保证，
+        而不是靠每处都记得补一行。
+        """
+        before = task.status
+        task.transition_to(target)
+        summary = f"状态转移 {before.value}→{target.value}"
+        self._emit(
+            EventKind.STATUS_CHANGED,
+            task,
+            summary=f"{summary}：{note}" if note else summary,
+            payload={"from": before.value, "to": target.value, "note": note},
+        )
+        if target.is_terminal:
+            self._emit(
+                EventKind.TASK_FINISHED,
+                task,
+                summary=f"任务结束（{target.value}）：{task.summary.output or '无输出'}",
+                payload={"output": task.summary.output, "intent": _intent_value(task)},
+            )
+
     # ================================================================ 推进
 
     def _step(self, task: Task) -> None:
         window = self._windows[task.task_id]
         try:
             if task.status is TaskStatus.CREATED:
-                task.transition_to(TaskStatus.INTENTING)
+                self._transition(task, TaskStatus.INTENTING)
                 return
             handlers = {
                 TaskStatus.INTENTING: self._run_intent,
@@ -208,13 +274,18 @@ class TaskManager:
             self._terminate(task, TaskStatus.FAILED, f"重试 {limit} 次后仍失败：{exc.message}")
             return
         self._retries[task.task_id] = used
-        task.transition_to(TaskStatus.RETRYING)
+        self._transition(
+            task,
+            TaskStatus.RETRYING,
+            note=f"第 {used}/{limit} 次重试，临时错误：{exc.message}",
+        )
 
     def _run_retry(self, task: Task, window: ContextWindow) -> None:  # noqa: ARG002 - 阶段签名一致
         """指数退避后回到执行阶段，从未完成的步骤继续。"""
         attempt = self._retries[task.task_id]
-        self._sleep(self.settings.task.retry_backoff_seconds * (2 ** (attempt - 1)))
-        task.transition_to(TaskStatus.EXECUTING)
+        delay = self.settings.task.retry_backoff_seconds * (2 ** (attempt - 1))
+        self._sleep(delay)
+        self._transition(task, TaskStatus.EXECUTING, note=f"退避 {delay}s 后重试")
 
     # ---------------------------------------------------------------- 第一步：意图
 
@@ -237,10 +308,10 @@ class TaskManager:
             self.context.append_message(window, Message.assistant(question))
             # 澄清问题借 output 字段回传给控制台——它就是这一轮要展示给用户的内容
             self.context.update_summary(window, output=question)
-            task.transition_to(TaskStatus.CLARIFYING)
+            self._transition(task, TaskStatus.CLARIFYING, note=f"意图不明，向用户追问：{question}")
             return
 
-        task.transition_to(TaskStatus.PLANNING)
+        self._transition(task, TaskStatus.PLANNING, note=f"意图识别为 {decision.intent.value}")
 
     # ---------------------------------------------------------------- 第二步：规划
 
@@ -269,7 +340,7 @@ class TaskManager:
             for index, step in enumerate(steps)
         ]
         self.context.update_summary(window, operations=operations)
-        task.transition_to(TaskStatus.EXECUTING)
+        self._transition(task, TaskStatus.EXECUTING, note=f"规划出 {len(operations)} 个步骤")
 
     # ---------------------------------------------------------------- 第三步：执行
 
@@ -285,7 +356,7 @@ class TaskManager:
             f"步骤{op.index + 1}：{op.result}" for op in window.summary.operations if op.result
         ]
         self.context.update_summary(window, result="\n".join(results))
-        task.transition_to(TaskStatus.VALIDATING)
+        self._transition(task, TaskStatus.VALIDATING, note="所有步骤执行完毕")
 
     def _run_operation(self, task: Task, window: ContextWindow, operation: Operation) -> None:
         max_rounds = self.settings.task.max_rounds_per_step
@@ -338,6 +409,22 @@ class TaskManager:
             window, Message.tool(text, tool_call_id=call.id, name=call.name)
         )
 
+        self._emit(
+            EventKind.TOOL_CALLED,
+            task,
+            summary=f"调用 {call.name} → {'ok' if result.ok else '失败'}：{result.summary}",
+            payload={
+                "call_id": call.id,
+                "tool_name": call.name,
+                "arguments": call.arguments,
+                "ok": result.ok,
+                "internal": self.tools.is_internal(call.name),
+                # 内部工具不落黑板，落库方要拿全量只能从这里取
+                "result": result.data if result.ok else None,
+                "error": result.error,
+            },
+        )
+
     def _spend_tool_call(self, task: Task) -> None:
         used = self._tool_calls[task.task_id] + 1
         limit = self.settings.task.max_tool_calls
@@ -362,7 +449,7 @@ class TaskManager:
             output = decision.output or window.summary.result or "任务已完成。"
             self.context.update_summary(window, output=output)
             self.context.append_message(window, Message.assistant(output))
-            task.transition_to(TaskStatus.COMPLETED)
+            self._transition(task, TaskStatus.COMPLETED, note="校验通过")
             return
 
         used = self._revalidations[task.task_id] + 1
@@ -380,7 +467,9 @@ class TaskManager:
             ),
         ]
         self.context.update_summary(window, operations=operations)
-        task.transition_to(TaskStatus.EXECUTING)
+        self._transition(
+            task, TaskStatus.EXECUTING, note=f"校验未通过，补充执行：{decision.reason}"
+        )
 
     # ---------------------------------------------------------------- 终态
 
@@ -394,15 +483,20 @@ class TaskManager:
           waiting / retrying / paused / validating 能熔断），此时退回 ``failed``。
 
         宁可换一个语义相近的终态，也不绕过状态机——转移表是这个系统的主干约束。
+
+        写入顺序：**先把 output/error 准备好，再落状态**。终态转移会同时发出
+        TASK_FINISHED 事件，日志与落库都从事件上读 output；若先转移，它们看到的就是
+        一个还没填的 None。
         """
         window = self._windows[task.task_id]
         if task.status is TaskStatus.CREATED and target is not TaskStatus.CANCELED:
-            task.transition_to(TaskStatus.INTENTING)
+            self._transition(task, TaskStatus.INTENTING)
         if not task.status.can_transition_to(target):
             target = TaskStatus.FAILED
-        task.transition_to(target)
+
         task.error = {"status": target.value, "reason": reason}
         self.context.update_summary(window, output=f"[{target.value}] {reason}")
+        self._transition(task, target, note=reason)
         self.memory.archive(window)
 
 
@@ -410,13 +504,18 @@ def _dump(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _intent_value(task: Task) -> str | None:
+    return task.summary.intent.value if task.summary.intent else None
+
+
 def build_task_manager(
     settings: AppSettings,
     *,
     llm: BaseLLMClient | None = None,
+    listeners: Sequence[TaskListener] = (),
     sleeper: Callable[[float], None] | None = None,
 ) -> TaskManager:
-    """按配置装配一整套依赖。控制台与测试都从这里拿 TaskManager。"""
+    """按配置装配一整套依赖。控制台与 Django 层都从这里拿 TaskManager。"""
     tools = build_tool_manager(settings)
     knowledge = KnowledgeMemory(tools.catalog())
     return TaskManager(
@@ -425,5 +524,6 @@ def build_task_manager(
         context=ContextManager(settings, knowledge),
         memory=MemoryManager(knowledge, max_tasks=settings.memory.max_tasks),
         tools=tools,
+        listeners=listeners,
         sleeper=sleeper,
     )

@@ -46,6 +46,11 @@ known-first-party = ["agent"]
 # enums.py 的 TaskStatus 与转移表按 docs/require.md 原样落地：既然是规格的转写，
 # 就不为了风格把 (str, Enum) 改成 StrEnum、把规格里的中文注释重新折行。
 "agent/enums.py" = ["E501", "UP042"]
+# Django 的配置与迁移是框架约定的写法，不套用本项目的注解与命名规则
+"server/settings.py" = ["E501"]
+# Meta.ordering / migrations 的列表是 Django 的框架写法，不是"可变默认值"隐患
+"server/api/models.py" = ["RUF012"]
+"server/api/migrations/*" = ["E501", "ANN", "N806", "RUF012"]
 "tests/**" = ["ANN", "ARG"]
 "**/__init__.py" = ["F401"]
 
@@ -55,6 +60,8 @@ quote-style = "double"
 # ---------------------------------------------------------------- mypy
 [tool.mypy]
 python_version = "3.11"
+# 只检查 agent/：Django 层大量动态属性（request.agent_session、模型管理器）
+# 在 strict 下需要成片的 type: ignore，收益不抵噪音。边界靠测试守。
 files = ["agent"]
 plugins = ["pydantic.mypy"]
 strict = true
@@ -75,6 +82,7 @@ minversion = "8.0"
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
+DJANGO_SETTINGS_MODULE = "server.settings"
 markers = [
     "e2e: 使用 MockLLM 跑通 created→completed 全链路的端到端测试",
 ]

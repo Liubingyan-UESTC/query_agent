@@ -28,7 +28,9 @@ __all__ = [
     "ContextSettings",
     "LLMProfile",
     "LLMSettings",
+    "LogSettings",
     "MemorySettings",
+    "ServerSettings",
     "TaskSettings",
     "ToolSettings",
     "get_settings",
@@ -122,6 +124,37 @@ class LLMSettings(_GroupSettings):
         return [self.primary, *self.fallbacks]
 
 
+# ============================================================ 日志
+
+
+class LogSettings(_GroupSettings):
+    """日志输出策略。级别只有这一个来源，不再与 APP_ 组重复。"""
+
+    model_config = _settings_config("LOG_")
+
+    level: LogLevel = "INFO"
+    dir: Path = Path("logs")
+    """日志目录，相对路径按项目根解析；不存在时由 setup_logging 自动创建。"""
+
+    file: str = "log.txt"
+    max_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
+    """单个日志文件的大小上限，超出即轮转，防止无限膨胀。"""
+
+    backup_count: int = Field(default=5, ge=0)
+    to_console: bool = True
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _upper(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
+    def resolved_dir(self) -> Path:
+        return self.dir if self.dir.is_absolute() else PROJECT_ROOT / self.dir
+
+    def resolved_file(self) -> Path:
+        return self.resolved_dir() / self.file
+
+
 # ============================================================ 上下文 / 记忆
 
 
@@ -199,6 +232,34 @@ class TaskSettings(_GroupSettings):
     """任务级重试的退避基数，第 n 次重试等待 ``base * 2^(n-1)`` 秒。"""
 
 
+# ============================================================ 网络服务
+
+
+class ServerSettings(_GroupSettings):
+    """网络服务层的参数。放在这里是为了守住"配置只有一个入口"这条约定。"""
+
+    model_config = _settings_config("SERVER_")
+
+    session_header: str = "X-Session-Id"
+    """会话凭证的请求头名。"""
+
+    session_cookie: str = "agent_session"
+    """会话凭证的 Cookie 名。"""
+
+    session_cookie_max_age: int = Field(default=7 * 24 * 3600, ge=0)
+
+    inline_result_max_chars: int = Field(default=4000, ge=0)
+    """工具结果内联进 ``tool_calls.result_json`` 的字符上限，超出改存文件。"""
+
+    tool_result_dir: Path = Path("data/tool_results")
+    """超限结果的落盘目录，表里只留相对路径引用。"""
+
+    def resolved_tool_result_dir(self) -> Path:
+        if self.tool_result_dir.is_absolute():
+            return self.tool_result_dir
+        return PROJECT_ROOT / self.tool_result_dir
+
+
 # ============================================================ 聚合根
 
 
@@ -209,18 +270,14 @@ class AppSettings(BaseSettings):
 
     env: AppEnv = "dev"
     debug: bool = True
-    log_level: LogLevel = "INFO"
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    log: LogSettings = Field(default_factory=LogSettings)
+    server: ServerSettings = Field(default_factory=ServerSettings)
     context: ContextSettings = Field(default_factory=ContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     tool: ToolSettings = Field(default_factory=ToolSettings)
     task: TaskSettings = Field(default_factory=TaskSettings)
-
-    @field_validator("log_level", mode="before")
-    @classmethod
-    def _upper(cls, value: object) -> object:
-        return value.upper() if isinstance(value, str) else value
 
 
 def load_settings(*, env_file: Path | None = ENV_FILE, **overrides: Any) -> AppSettings:
@@ -233,6 +290,8 @@ def load_settings(*, env_file: Path | None = ENV_FILE, **overrides: Any) -> AppS
     try:
         groups: dict[str, Any] = {
             "llm": LLMSettings.from_env(env_file),
+            "log": LogSettings.from_env(env_file),
+            "server": ServerSettings.from_env(env_file),
             "context": ContextSettings.from_env(env_file),
             "memory": MemorySettings.from_env(env_file),
             "tool": ToolSettings.from_env(env_file),

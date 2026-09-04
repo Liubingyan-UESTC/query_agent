@@ -1,7 +1,7 @@
 """共享 fixture。
 
 统一原则：测试**不读项目根的 .env**（``env_file=None``），也不触网（MockLLM），
-数据文件按需指向临时目录，保证结果只取决于用例自身。
+数据文件与日志目录指向临时目录，保证结果只取决于用例自身。
 """
 
 import json
@@ -10,6 +10,24 @@ from pathlib import Path
 import pytest
 
 from agent.config import load_settings
+from agent.logging_setup import setup_logging
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolated_log_settings(tmp_path_factory):
+    """把日志重定向到临时目录，并把这份配置暴露给需要重配日志的用例。
+
+    Django 的 settings 在 pytest 启动时就配好了日志，指向仓库真实的 ``logs/log.txt``。
+    不隔离的话，测试里那些故意制造的异常（"数据库连接断了"之类）会混进运维日志，
+    让真正 tail 这个文件的人白排查一场。
+
+    需要临时改日志配置的用例（如 test_api 里那个断言日志内容的），**必须用这份配置
+    恢复**，不能调 ``load_settings()`` 默认值——那会把后续用例的日志又指回仓库。
+    """
+    settings = load_settings(env_file=None, log={"dir": tmp_path_factory.mktemp("logs")})
+    setup_logging(settings, force=True)
+    return settings
+
 
 SAMPLE_LOGS = [
     {

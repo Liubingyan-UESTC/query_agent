@@ -3,6 +3,9 @@
 一个进程 = 一个会话，所以同一次运行里的多轮提问共享 WorkingMemory，"继续统计刚才的
 结果"这类追问才能找到关联任务。
 
+问答走 stdout，任务事件的日志走 stderr 与 ``logs/log.txt``——两者分开，重定向问答
+输出时不会把日志混进去。
+
 运行::
 
     python -m agent.cli            # 未配置 LLM_API_KEY 时自动用 MockLLM
@@ -17,6 +20,7 @@ from collections.abc import Callable, Iterable
 from agent.config import AppSettings, get_settings
 from agent.enums import TaskStatus
 from agent.errors import AgentError
+from agent.logging_setup import LoggingListener, setup_logging
 from agent.models import Task, new_session_id
 from agent.task_manager import TaskManager, build_task_manager
 
@@ -195,8 +199,13 @@ def _line_reader(lines: Iterable[str] | None) -> Callable[[], str | None]:
 
 
 def build_console(settings: AppSettings | None = None, *, verbose: bool = False) -> ConsoleAgent:
+    """装配控制台。日志与 HTTP 入口共用同一套配置，事件也照样写进 logs/log.txt。"""
     used = settings or get_settings()
-    return ConsoleAgent(build_task_manager(used), verbose=verbose)
+    setup_logging(used)
+    return ConsoleAgent(
+        build_task_manager(used, listeners=[LoggingListener()]),
+        verbose=verbose,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

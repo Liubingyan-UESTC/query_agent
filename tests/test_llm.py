@@ -18,7 +18,7 @@ from agent.llm import (
     call_structured,
     extract_json,
 )
-from agent.llm.openai_client import translate_openai_error
+from agent.llm.openai_client import strip_reasoning, translate_openai_error
 from agent.models import Message
 
 
@@ -354,6 +354,39 @@ class TestOpenAICompatClient:
         client, _ = self.make(errors=[RuntimeError("boom")])
         with pytest.raises(LLMError, match="模型调用失败"):
             client.chat(request())
+
+
+class TestStripReasoning:
+    """推理模型（DeepSeek-R1 / MiniMax / Qwen-thinking）会把思维链内联在 content 里。"""
+
+    def test_paired_block_is_removed(self):
+        assert strip_reasoning("<think>先查一下</think>共 12 条 ERROR") == "共 12 条 ERROR"
+
+    def test_multiple_blocks_are_removed(self):
+        assert strip_reasoning("<think>a</think>中间<think>b</think>结论") == "中间结论"
+
+    def test_multiline_block_is_removed(self):
+        raw = "<think>\n第一步…\n第二步…\n</think>\n最终答复"
+        assert strip_reasoning(raw) == "最终答复"
+
+    def test_orphan_closing_tag_drops_everything_before_it(self):
+        """模型偶尔漏掉开标签，前面那一大段仍然是推理。"""
+        assert strip_reasoning("啰嗦的推理过程</think>真正的答复") == "真正的答复"
+
+    def test_plain_content_is_untouched(self):
+        assert strip_reasoning("共 12 条 ERROR 日志") == "共 12 条 ERROR 日志"
+
+    def test_empty_content(self):
+        assert strip_reasoning("") == ""
+
+    def test_reasoning_never_reaches_the_response(self):
+        """走完整解析路径：思维链不该进 LLMResponse.content。"""
+        fake = FakeOpenAI([completion("<think>内部推测</think>对外答复")])
+        client = OpenAICompatClient(LLMProfile(api_key="sk-1"), client_factory=lambda _p: fake)
+        response = client.chat(request())
+
+        assert response.content == "对外答复"
+        assert "内部推测" not in response.content
 
 
 class TestErrorTranslation:

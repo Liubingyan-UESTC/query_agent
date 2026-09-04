@@ -45,7 +45,7 @@ class TestEnvFile:
             "\n".join(
                 [
                     "APP_ENV=test",
-                    "APP_LOG_LEVEL=debug",
+                    "LOG_LEVEL=debug",
                     "LLM_API_KEY=sk-secret",
                     "LLM_MODEL=qwen-max",
                     "LLM_BASE_URL=https://dashscope.example/v1",
@@ -57,7 +57,7 @@ class TestEnvFile:
         )
         settings = load_settings(env_file=env_file)
         assert settings.env == "test"
-        assert settings.log_level == "DEBUG"
+        assert settings.log.level == "DEBUG"
         assert settings.llm.primary.model == "qwen-max"
         assert settings.llm.primary.base_url == "https://dashscope.example/v1"
         assert settings.context.history_summary_limit == 3
