@@ -69,6 +69,9 @@ python manage.py migrate            # 建 SQLite 四张表（data/agent.sqlite3�
 python manage.py runserver 7080
 ```
 
+> 生产用 `gunicorn -w 1 --threads 16 server.wsgi`。**worker 只能是 1**，原因见
+> [并发](#并发)。
+
 ```bash
 # 第一次不带凭证：响应头/Cookie/body 三处都会带回新的 session_id
 curl -si localhost:7080/api/chat -H 'Content-Type: application/json' \
@@ -206,7 +209,82 @@ sqlite3 data/agent.sqlite3 'select role, tool_call_id, substr(content,1,40) from
 ```
 
 **重启不恢复**：任务与黑板只活在内存里。重启后历史照样能查，但「正等着澄清」的任务会丢，
-用户重新提问即可。并发上，`run_turn` 用一把进程锁把任务执行串行化——本地测试服务的取舍。
+用户重新提问即可。
+
+---
+
+## 并发
+
+**会话之间并发，会话之内串行。**
+
+并发的天然单位是会话：不同会话的黑板、工作记忆、任务表互不相干，没有理由互等；而同一
+会话的追问依赖上一轮结果（澄清态、`related_task_ids`、工作记忆都是顺序语义），并发推进
+只会让上下文错乱。所以 `run_turn` 按 session_id 加锁（`server/api/runtime.py`），同会话的
+第二个请求**阻塞排队**直到前一个跑完。
+
+锁表按引用计数回收：会话 id 由客户端提供，只增不减就是一条稳定的内存泄漏。
+
+### 部署：单进程多线程
+
+```bash
+gunicorn -w 1 --threads 16 server.wsgi        # 生产
+python manage.py runserver 7080               # 开发（Django 自带多线程）
+```
+
+**不要加 worker。** `TaskManager` 是 per-process 单例，任务表与黑板都在进程内存里。
+`-w 4` 会得到 4 个互不相识的 manager——用户第一轮进 worker 1 建了澄清任务，第二轮被路由到
+worker 3 就找不到它，上下文凭空消失。这是正确性问题，不是性能问题。要横向扩容，得先把
+任务状态搬去 Redis 之类的外部存储。
+
+单进程不吃亏：瓶颈是 LLM 的网络等待，线程绝大部分时间在等 I/O，GIL 几乎不影响吞吐。
+
+### 三道闸门
+
+| 位置 | 机制 | 作用 |
+|---|---|---|
+| `server/api/runtime.py` | 每会话一把 `Lock` | 同会话串行，跨会话并行 |
+| `agent/llm/limiter.py` | `BoundedSemaphore(LLM_MAX_CONCURRENCY)` | 限制在途模型调用数，别把供应商配额打爆 |
+| `agent/task_manager.py` | `_registry_lock` | 保护跨会话共享的任务注册表 |
+| `runtime.acquire(max_waiters=...)` | 排队上限 | 同会话排队 > `SERVER_MAX_QUEUE_PER_SESSION` 立即 503 + `Retry-After`，不让锁表无限堆积 |
+
+模型闸门装在**重试里面**（`Resilient(Gated(端点))`）：退避 sleep 不占并发许可，否则一个
+正在退避 8s 的请求会白占一个并发位。降级链上所有端点共享同一个闸门，不然上限会变成
+「端点数 × N」。
+
+### `LLM_MAX_CONCURRENCY` 怎么调
+
+默认值 8 是经验值。MiniMax Token Plan 实测：
+
+| MAX_CONC | N 并发 | 墙钟 | 失败 |
+|---|---|---|---|
+| 4 | 4 | 27.8s | 0 |
+| 4 | 32 | 87.7s | 0 |
+| 8 | 32 | 87.7s | 0 |
+| 8 | 64 | 160s | **1 个 HTTP 529（集群过载）** |
+
+**关键观察**：429 没出现过——失败都是供应商临时性 529（集群过载），不是账户级限流。
+也就是说 MiniMax 免费档对**总吞吐量**敏感（突发过载会触发过载保护），但**稳态并发上限 ≥ 8**。
+
+**调优流程**：① 查供应商控制台拿到并发/RPM 配额；② 设 `MAX_CONCURRENCY = floor(配额 × 0.7)`；
+③ 跑 1 分钟梯度负载，看 4xx/5xx 比例；④ 有 429 就降一档，否则不动。**别凭直觉设 16**
+——大于真实上限的值不会更快，只会让所有请求一起撞 529 然后集体退避。
+
+### SQLite 的三个参数
+
+`server/settings.py` 里三个都不能省：
+
+- `journal_mode=WAL`——默认的 rollback journal 下写事务会阻塞**所有读**，一次 `/api/chat`
+  落库就能卡住并发的 `/api/history`；
+- `timeout=20`——拿不到写锁时等而不是立刻抛 `database is locked`；
+- `transaction_mode=IMMEDIATE`——BEGIN 时就取写锁。默认的 DEFERRED 会在事务中途从读升级
+  为写，两个事务同时升级必然有一方拿不到锁且**无法退避**（已经读过了）。`DbListener`
+  每个事件都是「先读后写」，正是这个形态。
+
+没设 `ATOMIC_REQUESTS`：那会把写事务拉长到整个请求、包住几十秒的 LLM 调用，单写者的
+SQLite 会被一个慢任务彻底堵死。
+
+WAL 下 SQLite 仍是**单写者**，这是当前架构的写入天花板。真要更高并发就换 PostgreSQL——
+只需改 `DATABASES`，ORM 代码不用动。
 
 ---
 
@@ -237,7 +315,7 @@ sqlite3 data/agent.sqlite3 'select role, tool_call_id, substr(content,1,40) from
 
 | 组 | 关键项 |
 |---|---|
-| `LLM_` | `API_KEY`（**私密**，留空自动用 MockLLM）、`BASE_URL`、`MODEL`、`MAX_RETRIES`、`FALLBACKS`（降级链） |
+| `LLM_` | `API_KEY`（**私密**，留空自动用 MockLLM）、`BASE_URL`、`MODEL`、`MAX_RETRIES`、`MAX_CONCURRENCY`（在途调用上限）、`FALLBACKS`（降级链） |
 | `LOG_` | `LEVEL`、`DIR`、`FILE`、`MAX_BYTES`、`BACKUP_COUNT`、`TO_CONSOLE` |
 | `SERVER_` | 会话凭证的 header/Cookie 名、`INLINE_RESULT_MAX_CHARS`、`TOOL_RESULT_DIR` |
 | `CONTEXT_` | 历史摘要条数、关联任务注入条数、近 K 条对话 |

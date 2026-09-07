@@ -20,7 +20,7 @@ from agent.logging_setup import get_logger
 from agent.models import Task
 from server.api.models import Message, ToolCall
 from server.api.models import Task as TaskRow
-from server.api.runtime import get_manager, run_turn
+from server.api.runtime import QueueFullError, get_manager, run_turn
 
 __all__ = ["chat", "health", "history", "task_detail"]
 
@@ -51,6 +51,12 @@ def chat(request: HttpRequest) -> HttpResponse:
     logger.info("会话 %s 收到提问：%s", session.session_id, text)
     try:
         task = run_turn(session.session_id, text)
+    except QueueFullError as exc:
+        # 同会话排队超上限——告诉客户端过会儿再试，给一个保守的 Retry-After
+        logger.warning("会话 %s 排队已满（%d），拒收", session.session_id, exc.queue_size)
+        response = _error(exc.message, status=503, session_id=session.session_id)
+        response["Retry-After"] = "5"
+        return response
     except AgentError as exc:
         # 内核已把可预期的错误收成 AgentError；到这里说明是编排层拒绝了请求
         logger.error("会话 %s 处理失败：%s", session.session_id, exc.message)

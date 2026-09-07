@@ -8,6 +8,7 @@ Kibana 索引。关键字在记录的**所有字段值**上做大小写不敏感
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -74,12 +75,22 @@ class SearchTool(BaseTool):
 
     def __init__(self, settings: ToolSettings) -> None:
         self._settings = settings
+        # 索引是懒加载的，而工具实例被所有会话共享，所以首次加载必须加锁：不加锁时
+        # N 个并发请求会各自读一遍盘、各自解析一遍 JSON，最后互相覆盖 _index。
+        # 结果虽然等价（加载是幂等的），但把一次启动开销放大成了 N 次。
+        self._lock = threading.Lock()
         self._index: dict[str, Any] | None = None
 
     def _records(self) -> tuple[str, list[dict[str, Any]]]:
-        if self._index is None:
-            self._index = load_log_index(self._settings.resolved_data_file())
-        return str(self._index.get("index", "logs")), list(self._index["records"])
+        index = self._index
+        if index is None:
+            with self._lock:
+                # 双重检查：等锁期间别的线程可能已经加载好了
+                if self._index is None:
+                    self._index = load_log_index(self._settings.resolved_data_file())
+                index = self._index
+        # 返回拷贝，调用方的过滤/截断不会碰到共享的那一份
+        return str(index.get("index", "logs")), list(index["records"])
 
     def run(self, args: SearchArgs, ctx: ToolContext) -> ToolResult:  # noqa: ARG002 - 检索无需上下文
         index, records = self._records()
