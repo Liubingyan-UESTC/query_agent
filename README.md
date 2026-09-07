@@ -139,7 +139,7 @@ knowledge} → task_manager → {cli, server}`。**`agent/` 不 import django**�
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `search_tool` | `keyword`、`limit` | 关键字在日志所有字段上做大小写不敏感子串匹配；空串返回全部 |
+| `search_tool` | `keyword`、`limit` | 关键字在日志所有字段上做大小写不敏感子串匹配；**空格分隔的多个词是 AND**（`order-service ERROR` = 该服务的错误日志）；空串返回全部 |
 | `analysis_tool` | `tool_call_id`、`group_by`、`metric`、`field`、`top` | 读黑板上某次检索的结果做分组统计（count / sum / avg / max / min） |
 | `fetch_tool_result` | `tool_call_id` | 取回某次调用的全量结果（内部工具，不落黑板） |
 
@@ -262,7 +262,7 @@ aborted 的边，实现宁可换个语义相近的终态，也不绕过状态机
 ## 开发
 
 ```bash
-python -m pytest -q                 # 374 个测试，全部离线（不触网、不碰真实模型）
+python -m pytest -q                 # 382 个测试，全部离线（不触网、不碰真实模型）
 python -m pytest -q --cov           # 内核覆盖率 ~96%
 ruff check . && ruff format --check .
 mypy agent                          # strict（只管内核，见 pyproject 里的说明）

@@ -359,16 +359,31 @@ class TaskManager:
         self._transition(task, TaskStatus.VALIDATING, note="所有步骤执行完毕")
 
     def _run_operation(self, task: Task, window: ContextWindow, operation: Operation) -> None:
+        """单步内的「模型 ↔ 工具」循环。
+
+        **最后一轮强制收敛**：不再把工具清单发给模型，并在指令里明说"这是最后一轮，
+        基于已有结果直接给结论"。否则模型很容易一路换着关键字试到轮次耗尽，明明手上
+        已经有数据，任务却熔断成 ABORTED、用户什么都拿不到。
+        """
         max_rounds = self.settings.task.max_rounds_per_step
-        for _round in range(max_rounds):
-            messages = self.context.build_execute_messages(window, operation)
+        for round_index in range(max_rounds):
+            final_round = round_index == max_rounds - 1
+            messages = self.context.build_execute_messages(
+                window, operation, final_round=final_round
+            )
             response = self.llm.chat(
                 LLMRequest(
                     messages=messages,
-                    tools=self.tools.openai_schemas(),
+                    tools=None if final_round else self.tools.openai_schemas(),
                     stage="execute",
                 )
             )
+            if final_round and response.wants_tool:
+                # 没给工具还硬要调，说明模型不配合；有正文就当结论，否则只能熔断
+                if not response.content:
+                    break
+                response = response.model_copy(update={"tool_calls": []})
+
             if not response.wants_tool:
                 operation.result = response.content
                 operation.status = OperationStatus.SUCCEEDED

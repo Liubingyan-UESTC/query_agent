@@ -221,10 +221,14 @@ class ContextManager:
         self,
         window: ContextWindow,
         operation: Operation,
+        *,
+        final_round: bool = False,
     ) -> list[Message]:
         """第三步：系统提示词 + 近 K 条本任务对话 + 当前步骤指令。
 
         指令里显式写出「建议工具」，模型可以照做也可以自己换——规划只是建议。
+        ``final_round=True`` 时改成收敛指令：这一轮不发工具清单，要求它用手上的数据
+        直接作答，避免"一路换关键字再试"把轮次耗光。
         """
         intent = window.summary.intent or IntentType.QUERY
         total = len(window.summary.operations)
@@ -234,6 +238,14 @@ class ContextManager:
             f"建议工具：{suggested}\n"
             f"用户的原始请求是：{window.summary.content}"
         )
+        if final_round:
+            instruction = (
+                f"当前步骤 {operation.index + 1}/{total}：{operation.description}\n"
+                f"用户的原始请求是：{window.summary.content}\n"
+                f"**这是本步骤的最后一轮，不要再调用工具。**"
+                f"请基于上面已经拿到的工具结果，直接给出这一步的结论；"
+                f"如果数据不足，就说明已知的部分和还缺什么。"
+            )
         return [
             Message.system(self._knowledge.execute_prompt(intent)),
             *window.recent_content(self._settings.context.recent_content_limit),

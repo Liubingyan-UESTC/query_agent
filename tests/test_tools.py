@@ -63,6 +63,37 @@ class TestSearchTool:
         result = manager.invoke(call("search_tool", keyword="504"), ctx)
         assert result.data["total"] == 1
 
+    def test_multiple_terms_are_anded(self, manager, ctx):
+        """用户最常问的就是「某服务的 ERROR 日志」——整串当子串匹配会命中 0 条。"""
+        both = manager.invoke(call("search_tool", keyword="order-service ERROR"), ctx)
+
+        assert both.data["total"] == 2  # fixture 里 order-service 的 ERROR 恰好 2 条
+        assert all(
+            r["service"] == "order-service" and r["level"] == "ERROR" for r in both.data["records"]
+        )
+
+    def test_term_order_does_not_matter(self, manager, ctx):
+        forward = manager.invoke(call("search_tool", keyword="order-service ERROR"), ctx)
+        reverse = manager.invoke(call("search_tool", keyword="ERROR order-service"), ctx)
+        assert forward.data["total"] == reverse.data["total"] == 2
+
+    def test_terms_may_match_different_fields(self, manager, ctx):
+        """一个词命中 service 字段、另一个命中 level 字段，也算同时满足。"""
+        result = manager.invoke(call("search_tool", keyword="node-1 504"), ctx)
+        assert result.data["total"] == 1
+
+    def test_unsatisfiable_combination_returns_nothing(self, manager, ctx):
+        result = manager.invoke(call("search_tool", keyword="order-service DEBUG"), ctx)
+        assert result.data["total"] == 0
+
+    def test_extra_whitespace_is_ignored(self, manager, ctx):
+        result = manager.invoke(call("search_tool", keyword="  order-service   ERROR  "), ctx)
+        assert result.data["total"] == 2
+
+    def test_matched_terms_are_reported(self, manager, ctx):
+        result = manager.invoke(call("search_tool", keyword="Order-Service ERROR"), ctx)
+        assert result.data["matched_terms"] == ["order-service", "error"]
+
     def test_empty_keyword_returns_everything(self, manager, ctx):
         result = manager.invoke(call("search_tool", keyword=""), ctx)
         assert result.data["total"] == 5

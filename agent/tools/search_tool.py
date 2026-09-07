@@ -22,7 +22,11 @@ __all__ = ["SearchArgs", "SearchTool", "load_log_index"]
 
 class SearchArgs(BaseModel):
     keyword: str = Field(
-        description="检索关键字，在日志的所有字段上做大小写不敏感子串匹配；空字符串表示不过滤。",
+        description=(
+            "检索关键字，在日志的所有字段上做大小写不敏感子串匹配。"
+            "用空格分隔多个词表示**同时满足**，例如 'order-service ERROR' 表示"
+            "既属于 order-service 又是 ERROR 级别。空字符串表示不过滤。"
+        ),
     )
     limit: int = Field(
         default=20,
@@ -44,11 +48,17 @@ def load_log_index(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _matches(record: dict[str, Any], keyword: str) -> bool:
-    if not keyword:
+def _matches(record: dict[str, Any], terms: list[str]) -> bool:
+    """每个词都要在**某个**字段里出现（词之间是 AND，字段之间是 OR）。
+
+    整串当一个子串匹配是行不通的：用户最常问的就是「order-service 的 ERROR 日志」，
+    而 "order-service ERROR" 这个字符串不会完整出现在任何字段里，只会命中 0 条，
+    把模型逼进「换个词再试」的死循环。
+    """
+    if not terms:
         return True
-    needle = keyword.lower()
-    return any(needle in str(value).lower() for value in record.values())
+    haystack = [str(value).lower() for value in record.values()]
+    return all(any(term in value for value in haystack) for term in terms)
 
 
 class SearchTool(BaseTool):
@@ -56,8 +66,9 @@ class SearchTool(BaseTool):
     description: ClassVar[str] = (
         "按关键字检索日志库。关键字会在 timestamp/level/service/host/message/"
         "status_code/latency_ms/user_id/trace_id 等所有字段上做大小写不敏感子串匹配。"
-        "例如 keyword='ERROR' 查错误日志，keyword='order-service' 查某个服务，"
-        "keyword='timeout' 查超时。keyword 传空字符串则返回全部记录。"
+        "多个词用空格分隔表示同时满足：keyword='order-service ERROR' 查该服务的错误日志，"
+        "keyword='ERROR' 查全部错误，keyword='timeout' 查超时。"
+        "keyword 传空字符串则返回全部记录。"
     )
     args_schema: ClassVar[type[BaseModel]] = SearchArgs
 
@@ -72,7 +83,8 @@ class SearchTool(BaseTool):
 
     def run(self, args: SearchArgs, ctx: ToolContext) -> ToolResult:  # noqa: ARG002 - 检索无需上下文
         index, records = self._records()
-        hits = [record for record in records if _matches(record, args.keyword)]
+        terms = [term.lower() for term in args.keyword.split()]
+        hits = [record for record in records if _matches(record, terms)]
 
         limit = min(args.limit, self._settings.max_rows)
         returned = hits[:limit]
@@ -86,6 +98,7 @@ class SearchTool(BaseTool):
             {
                 "index": index,
                 "keyword": args.keyword,
+                "matched_terms": terms,
                 "total": len(hits),
                 "returned": len(returned),
                 "truncated": truncated,
