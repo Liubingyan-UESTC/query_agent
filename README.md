@@ -84,6 +84,10 @@ curl -s localhost:7080/api/chat -H "X-Session-Id: $SID" \
 
 curl -s localhost:7080/api/history -H "X-Session-Id: $SID"
 curl -s localhost:7080/api/health
+
+# 流式版（看任务进度）：每条状态变化、工具调用、终态都立刻推过来
+curl -N -s localhost:7080/api/chat/stream -H "X-Session-Id: $SID" \
+     -H 'Content-Type: application/json' -d '{"message":"查 ERROR 日志"}'
 ```
 
 用 Cookie 也一样（浏览器 / `curl -c/-b` 自动带）：
@@ -171,6 +175,54 @@ knowledge} → task_manager → {cli, server}`。**`agent/` 不 import django**�
 | `GET` | `/api/tasks/<task_id>` | 单任务详情：summary 快照 + 消息 + 工具调用（只能看本会话的） |
 | `GET` | `/api/health` | 存活探测 + 当前实际装配的模型（真实还是 Mock）与工具清单 |
 
+### 流式响应：`/api/chat/stream`
+
+走 SSE（Server-Sent Events）协议，body 与 `/api/chat` 相同。任务在**后台线程**跑，主线程
+从队列里拉事件、按到达顺序推给客户端——意图/规划/工具/校验四个阶段一发生就推，用户不必
+等整轮跑完（MiniMax-M3 实测约 12s 内就能看到"正在识别意图"）。
+
+**事件格式**：每条任务事件两行（`event:` + `data:`），事件之间空一行：
+
+```
+event: task_created
+data: {"kind":"task_created","task_id":"task_xxx","session_id":"sess_xxx","status":"created","summary":"...","payload":{...},"at":"..."}
+
+event: status_changed
+data: {"kind":"status_changed","task_id":"task_xxx","status":"intenting","summary":"状态转移 created→intenting","payload":{"from":"created","to":"intenting","note":""},"at":"..."}
+
+event: tool_called
+data: {"kind":"tool_called","status":"executing","payload":{"tool_name":"search_tool","arguments":{...},"ok":true,"call_id":"call_xxx"},...}
+
+event: task_finished
+data: {"kind":"task_finished","status":"completed","payload":{"output":"...","intent":"query"},...}
+```
+
+`kind` 取值：`task_created` / `status_changed` / `tool_called` / `task_finished`。
+`status` 取值见 `agent.enums.TaskStatus`。
+
+**心跳**：连续 15s 无事件自动推 `: heartbeat\n\n`，防止被 nginx/CDN 当空闲连接掐掉。
+
+**错误处理**：流已开就回不了 HTTP 503。真正的失败用 `event: error` 推送（如排队已满、
+会话层 AgentError）。客户端必须把 `event: error` 当作请求失败处理。
+
+**断连处理**：客户端断开时本连接关闭，**后台线程继续跑**到结束——避免引入"跨线程改任务
+状态"的竞态。任务结束后通过 `TASK_FINISHED` 事件告知结果（这条也可能被丢），所以**断线
+重连后客户端应当去 `/api/tasks/<id>` 拿最终快照**。
+
+**客户端实现**：
+
+```js
+// 浏览器
+const es = new EventSource("/api/chat/stream", {withCredentials: true});
+es.addEventListener("status_changed", e => updateUI(JSON.parse(e.data)));
+es.addEventListener("task_finished", e => { showResult(JSON.parse(e.data)); es.close(); });
+es.addEventListener("error", e => showError());
+
+// CLI
+curl -N -s localhost:7080/api/chat/stream -H 'X-Session-Id: sess_xxx' \
+     -H 'Content-Type: application/json' -d '{"message":"查 ERROR 日志"}'
+```
+
 ### 会话凭证
 
 判断一次请求属于新会话还是已有会话，只看凭证：
@@ -245,29 +297,10 @@ worker 3 就找不到它，上下文凭空消失。这是正确性问题，不�
 | `server/api/runtime.py` | 每会话一把 `Lock` | 同会话串行，跨会话并行 |
 | `agent/llm/limiter.py` | `BoundedSemaphore(LLM_MAX_CONCURRENCY)` | 限制在途模型调用数，别把供应商配额打爆 |
 | `agent/task_manager.py` | `_registry_lock` | 保护跨会话共享的任务注册表 |
-| `runtime.acquire(max_waiters=...)` | 排队上限 | 同会话排队 > `SERVER_MAX_QUEUE_PER_SESSION` 立即 503 + `Retry-After`，不让锁表无限堆积 |
 
 模型闸门装在**重试里面**（`Resilient(Gated(端点))`）：退避 sleep 不占并发许可，否则一个
 正在退避 8s 的请求会白占一个并发位。降级链上所有端点共享同一个闸门，不然上限会变成
 「端点数 × N」。
-
-### `LLM_MAX_CONCURRENCY` 怎么调
-
-默认值 8 是经验值。MiniMax Token Plan 实测：
-
-| MAX_CONC | N 并发 | 墙钟 | 失败 |
-|---|---|---|---|
-| 4 | 4 | 27.8s | 0 |
-| 4 | 32 | 87.7s | 0 |
-| 8 | 32 | 87.7s | 0 |
-| 8 | 64 | 160s | **1 个 HTTP 529（集群过载）** |
-
-**关键观察**：429 没出现过——失败都是供应商临时性 529（集群过载），不是账户级限流。
-也就是说 MiniMax 免费档对**总吞吐量**敏感（突发过载会触发过载保护），但**稳态并发上限 ≥ 8**。
-
-**调优流程**：① 查供应商控制台拿到并发/RPM 配额；② 设 `MAX_CONCURRENCY = floor(配额 × 0.7)`；
-③ 跑 1 分钟梯度负载，看 4xx/5xx 比例；④ 有 429 就降一档，否则不动。**别凭直觉设 16**
-——大于真实上限的值不会更快，只会让所有请求一起撞 529 然后集体退避。
 
 ### SQLite 的三个参数
 
@@ -315,7 +348,7 @@ WAL 下 SQLite 仍是**单写者**，这是当前架构的写入天花板。真�
 
 | 组 | 关键项 |
 |---|---|
-| `LLM_` | `API_KEY`（**私密**，留空自动用 MockLLM）、`BASE_URL`、`MODEL`、`MAX_RETRIES`、`MAX_CONCURRENCY`（在途调用上限）、`FALLBACKS`（降级链） |
+| `LLM_` | `API_KEY`（**私密**，留空自动用 MockLLM）、`BASE_URL`、`MODEL`、`MAX_RETRIES`、`FALLBACKS`（降级链） |
 | `LOG_` | `LEVEL`、`DIR`、`FILE`、`MAX_BYTES`、`BACKUP_COUNT`、`TO_CONSOLE` |
 | `SERVER_` | 会话凭证的 header/Cookie 名、`INLINE_RESULT_MAX_CHARS`、`TOOL_RESULT_DIR` |
 | `CONTEXT_` | 历史摘要条数、关联任务注入条数、近 K 条对话 |

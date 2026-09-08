@@ -32,7 +32,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -59,6 +61,9 @@ __all__ = [
     "ValidateDecision",
     "build_task_manager",
 ]
+
+
+_logger = logging.getLogger(__name__)
 
 
 class _CircuitBreakError(AgentError):
@@ -141,6 +146,12 @@ class TaskManager:
         # session_id → 该会话的 task_id（按创建顺序）。有了它，pending_clarification
         # 只需扫本会话，既避免全表遍历，也不会再迭代一个别的会话正在插入的字典。
         self._session_tasks: dict[str, list[str]] = {}
+
+        # 临时监听器：HTTP 层在跑一轮任务时临时订阅，SSE 推给客户端。
+        # 与 _listeners 的差别：这里只对**本进程正在跑的这一轮**感兴趣，块退出就清。
+        # 锁内只做列表拷贝，不调用户代码——避免订阅方慢阻塞状态机。
+        self._ephemeral_lock = threading.Lock()
+        self._ephemeral: list[TaskListener] = []
 
     # ================================================================ 任务注册表
 
@@ -235,23 +246,41 @@ class TaskManager:
         kind: EventKind,
         task: Task,
         *,
-        summary: str,
+        summary: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
+        """状态机的发事件出口：永久 listener + 临时 listener 一起通知。"""
         with self._registry_lock:
             slot = self._slots.get(task.task_id)
-        emit_all(
-            self._listeners,
-            TaskEvent(
-                kind=kind,
-                task_id=task.task_id,
-                session_id=task.session_id,
-                status=task.status,
-                summary=summary,
-                payload=payload or {},
-                window=slot.window if slot is not None else None,
-            ),
+        event = TaskEvent(
+            kind=kind,
+            task_id=task.task_id,
+            session_id=task.session_id,
+            status=task.status,
+            summary=summary,
+            payload=payload or {},
+            window=slot.window if slot is not None else None,
         )
+        emit_all(self._listeners, event)
+        # 临时 listener 在锁外调用——订阅方是 SSE 队列推送，慢的话会丢事件，
+        # 但不能让订阅方阻塞状态机的推进
+        with self._ephemeral_lock:
+            ephemerals = list(self._ephemeral)
+        for listener in ephemerals:
+            try:
+                listener(event)
+            except Exception:
+                _logger.exception("临时监听器处理 %s 失败", kind.value)
+
+    # ================================================================ 临时订阅
+
+    def add_ephemeral(self, listener: TaskListener) -> None:
+        with self._ephemeral_lock:
+            self._ephemeral.append(listener)
+
+    def remove_ephemeral(self, listener: TaskListener) -> None:
+        with self._ephemeral_lock, contextlib.suppress(ValueError):
+            self._ephemeral.remove(listener)
 
     def _transition(self, task: Task, target: TaskStatus, *, note: str = "") -> None:
         """状态机推进的**唯一**入口：转移 + 发事件。

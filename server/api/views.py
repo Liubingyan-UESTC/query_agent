@@ -9,9 +9,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
@@ -20,7 +21,7 @@ from agent.logging_setup import get_logger
 from agent.models import Task
 from server.api.models import Message, ToolCall
 from server.api.models import Task as TaskRow
-from server.api.runtime import QueueFullError, get_manager, run_turn
+from server.api.runtime import QueueFullError, get_manager, run_turn, stream_turn
 
 __all__ = ["chat", "health", "history", "task_detail"]
 
@@ -63,6 +64,58 @@ def chat(request: HttpRequest) -> HttpResponse:
         return _error(exc.message, status=400, session_id=session.session_id)
 
     return JsonResponse(_task_payload(task, session.session_id))
+
+
+@csrf_exempt
+@require_POST
+def chat_stream(request: HttpRequest) -> HttpResponse:
+    """流式版 /api/chat：以 SSE 推送任务状态变化。
+
+    body 与 ``/api/chat`` 相同。响应是 ``text/event-stream``：
+
+    - ``event: task_created`` / ``status_changed`` / ``tool_called`` / ``task_finished``——
+      每条任务事件一行 ``event: <kind>\\ndata: <json>\\n\\n``；
+    - ``event: error``——任务在跑之前就被拒（会话排队满等）；
+    - ``: heartbeat``——每 15s 一次纯注释，防止被代理掐掉。
+
+    客户端实现建议：浏览器用 ``EventSource``；命令行 ``curl -N``；测试用 httpx + iter_lines。
+
+    错误处理：一旦开始流就只能回 HTTP 200，真正的失败用 ``event: error`` 推送。客户端
+    必须把 ``event: error`` 当作请求失败处理（不是 200 OK）。
+    """
+    session = request.agent_session  # type: ignore[attr-defined]
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError as exc:
+        return _error(f"请求体不是合法 JSON：{exc}", status=400, session_id=session.session_id)
+    if not isinstance(payload, dict):
+        return _error("请求体必须是 JSON 对象", status=400, session_id=session.session_id)
+
+    text = str(payload.get("message") or "").strip()
+    if not text:
+        return _error("message 不能为空", status=400, session_id=session.session_id)
+
+    logger.info("会话 %s 流式提问：%s", session.session_id, text)
+
+    def event_stream() -> Iterator[str]:
+        try:
+            yield from stream_turn(session.session_id, text)
+        except QueueFullError as exc:
+            logger.warning("会话 %s 流式排队已满（%d）", session.session_id, exc.queue_size)
+            yield 'event: error\ndata: {"error": "排队已满"}\n\n'
+        except AgentError as exc:
+            logger.error("会话 %s 流式失败：%s", session.session_id, exc.message)
+            err = json.dumps({"error": exc.message}, ensure_ascii=False)
+            yield f"event: error\ndata: {err}\n\n"
+        except Exception as exc:  # 流生成器崩溃不许挂住连接
+            logger.exception("流式响应生成器异常")
+            err = json.dumps({"error": repr(exc)[:200]}, ensure_ascii=False)
+            yield f"event: error\ndata: {err}\n\n"
+
+    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"  # nginx 不缓冲
+    return response
 
 
 @require_GET

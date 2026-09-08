@@ -13,6 +13,10 @@ session_id 分桶，所以一个实例服务所有会话，追问「刚才那批
 不只是让请求排队，更糟的是**慢操作也在锁内**：一次 LLM 调用可以占 60s，任务级退避还要
 再 sleep 若干秒，期间所有会话全被冻住。
 
+**流式响应**：``stream_turn`` 用后台线程跑任务，主线程从有界队列拉事件、转 SSE 推给客户
+端。客户端不需要等整轮跑完才能看到进度——意图/规划/工具调用/校验的转移一发生就推。
+GIL 不影响，因为任务大部分时间在网络 I/O 上等 LLM 响应，Python 字节码执行只占很少。
+
 **为什么不上多 worker**：``TaskManager`` 是 per-process 单例，任务表与黑板都在进程内存
 里。跑 ``gunicorn -w 4`` 会得到 4 个互不相识的 manager——用户第一轮进 worker 1 建了澄清
 任务，第二轮被路由到 worker 3 就找不到它，上下文凭空消失。这比性能问题更糟，是正确性
@@ -27,12 +31,16 @@ session_id 分桶，所以一个实例服务所有会话，追问「刚才那批
 
 from __future__ import annotations
 
+import json
+import queue
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from agent.config import AppSettings, get_settings
 from agent.errors import AgentError
+from agent.events import TaskEvent
 from agent.logging_setup import LoggingListener, get_logger, setup_logging
 from agent.models import Task
 from agent.task_manager import TaskManager, build_task_manager
@@ -45,6 +53,7 @@ __all__ = [
     "reset_manager",
     "run_turn",
     "set_manager",
+    "stream_turn",
 ]
 
 logger = get_logger("http")
@@ -174,3 +183,115 @@ def run_turn(session_id: str, text: str) -> Task:
             return manager.provide_clarification(pending.task_id, text)
         task = manager.create_task(text, session_id=session_id)
         return manager.run(task.task_id)
+
+
+# ================================================================ 流式响应
+
+
+_HEARTBEAT_INTERVAL = 15.0
+"""SSE 心跳间隔——避免被中间代理（nginx/CDN）当成空闲连接掐掉。"""
+
+_STREAM_QUEUE_MAX = 128
+"""事件队列上限。客户端慢到撑爆这个时新事件被丢弃，任务继续推进，
+任务结束后客户端可以从 ``/api/tasks/<id>`` 拿完整快照。"""
+
+# 哨兵：分别表示"任务正常结束"和"任务出错"
+_DONE = object()
+_ERROR = object()
+
+
+def _format_sse(event: TaskEvent) -> str:
+    """把 :class:`TaskEvent` 序列化成 SSE 文本。
+
+    ``TOOL_CALLED`` 的 ``result`` 字段可能很大（搜索工具回几百条记录），流上不带
+    详细数据——客户端拿到 ``task_id`` 后去 ``/api/tasks/<id>`` 看完整消息即可。
+    """
+    data: dict[str, object] = {
+        "kind": event.kind.value,
+        "task_id": event.task_id,
+        "session_id": event.session_id,
+        "status": event.status.value,
+        "summary": event.summary,
+        "payload": event.payload,
+        "at": event.at.isoformat(),
+    }
+    return f"event: {event.kind.value}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def stream_turn(session_id: str, text: str) -> Iterator[str]:
+    """以 SSE 格式流式跑一轮对话。
+
+    与 :func:`run_turn` 行为等价：同会话排队、同会话串行、新建 vs. 追问沿用同一个任务。
+    不同点是**任务在后台线程跑**，主线程从队列里拉事件、转 SSE 推给客户端。
+
+    事件序列：``task_created`` → ``status_changed`` ×N → ``tool_called`` ×N →
+    ``task_finished``。客户端用浏览器 ``EventSource`` 直接订阅即可。
+
+    **断连处理**：客户端断开时本生成器被 close，背景线程**继续跑**到结束（避免引入
+    跨线程改任务状态的竞态），但事件会因队列满而被丢弃。任务结束后通过 ``TASK_FINISHED``
+    事件告知客户端最终结果——但这条也会被丢，所以客户端断线重连后应当去 ``/api/tasks/<id>``
+    拿最终快照。
+    """
+    manager = get_manager()
+    cap = manager.settings.server.max_queue_per_session
+
+    # 有界队列 + drop-new：客户端慢就丢最新事件，比阻塞任务线程安全
+    event_queue: queue.Queue[TaskEvent | object] = queue.Queue(maxsize=_STREAM_QUEUE_MAX)
+
+    def listener(event: TaskEvent) -> None:
+        try:
+            event_queue.put_nowait(event)
+        except queue.Full:
+            # 队列满说明客户端跟不上——丢这条。下一次状态变化还是会推，UI 上不会
+            # 卡死，只是不够细；TASK_FINISHED 一定会进来，因为最后状态变化必触发
+            logger.debug("SSE 队列已满，丢弃事件 %s", event.kind.value)
+
+    def runner() -> None:
+        """后台线程：跑任务。所有错误都收成哨兵，由生成器翻译给客户端。"""
+        try:
+            manager.add_ephemeral(listener)
+            # 锁必须在 listener 注册**之后**抢，否则队列抢到了也拿不到 TASK_CREATED
+            try:
+                with _session_locks.acquire(session_id, max_waiters=cap):
+                    pending = manager.pending_clarification(session_id)
+                    if pending is not None:
+                        manager.provide_clarification(pending.task_id, text)
+                    else:
+                        task = manager.create_task(text, session_id=session_id)
+                        manager.run(task.task_id)
+            except QueueFullError:
+                event_queue.put(_ERROR)
+            except AgentError:
+                # 业务错误已经在事件流里以 TASK_FINISHED(status=failed) 发出，
+                # 这里不需要重复通知
+                pass
+        except Exception:
+            logger.exception("流式任务后台线程崩溃")
+            event_queue.put(_ERROR)
+        finally:
+            manager.remove_ephemeral(listener)
+            event_queue.put(_DONE)
+
+    thread = threading.Thread(target=runner, name=f"agent-stream-{session_id[:12]}", daemon=True)
+    thread.start()
+
+    last_heartbeat = time.monotonic()
+    try:
+        while True:
+            try:
+                item = event_queue.get(timeout=1.0)
+            except queue.Empty:
+                if time.monotonic() - last_heartbeat >= _HEARTBEAT_INTERVAL:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = time.monotonic()
+                continue
+            if item is _DONE:
+                break
+            if item is _ERROR:
+                yield 'event: error\ndata: {"error": "任务未完成"}\n\n'
+                break
+            assert isinstance(item, TaskEvent)
+            yield _format_sse(item)
+    finally:
+        # 客户端断开时本生成器被 close，但后台线程继续跑——它有自己的 _DONE 哨兵兜底
+        pass
