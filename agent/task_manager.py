@@ -17,13 +17,28 @@
 
 护栏全部读 ``settings.task``，判定集中在 :meth:`_spend_tool_call` 与各阶段入口，
 不散落在各处。
+
+**并发模型**：一个 TaskManager 服务所有会话，不同会话可以同时推进（HTTP 层按 session
+加锁，见 :mod:`server.api.runtime`），同一会话内串行。因此这里的约定是：
+
+- 任务注册表（``_slots``）是**跨会话共享**的，一切读写都在 ``_registry_lock`` 内，
+  且锁内只做字典操作，绝不调用模型或工具——那会把跨会话的并发又退化成串行；
+- 单个任务的状态（黑板、护栏计数器）收在 :class:`_TaskSlot` 里。它只被持有该会话锁的
+  那一个线程访问，所以槽内字段不需要再加锁。
+
+把计数器从五个平行字典改成一个槽，不只是整理：平行字典下"任务存在"不是原子的
+（``_tasks`` 已插入而 ``_retries`` 还没有），并发读会撞上 KeyError。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,10 +63,28 @@ __all__ = [
 ]
 
 
+_logger = logging.getLogger(__name__)
+
+
 class _CircuitBreakError(AgentError):
     """护栏耗尽。与普通错误分开，好让编排层转 ABORTED 而不是 FAILED。"""
 
     code = "circuit_break"
+
+
+@dataclass
+class _TaskSlot:
+    """一个任务的全部进程内状态：黑板 + 三个护栏计数器。
+
+    原先是五个按 task_id 并列的字典。合成一个槽之后，"任务已注册"变成一次原子的字典
+    插入——不会再出现 ``_tasks`` 有了、``_retries`` 还没有的中间态。
+    """
+
+    task: Task
+    window: ContextWindow
+    tool_calls: int = 0
+    revalidations: int = 0
+    retries: int = 0
 
 
 class _StageSchema(BaseModel):
@@ -107,22 +140,38 @@ class TaskManager:
         self._listeners = tuple(listeners)
         self._sleep = sleeper or time.sleep
 
-        self._tasks: dict[str, Task] = {}
-        self._windows: dict[str, ContextWindow] = {}
-        self._tool_calls: dict[str, int] = {}
-        self._revalidations: dict[str, int] = {}
-        self._retries: dict[str, int] = {}
+        # 跨会话共享，一切访问都在锁内；锁内只做字典操作，不碰模型/工具/磁盘
+        self._registry_lock = threading.Lock()
+        self._slots: dict[str, _TaskSlot] = {}
+        # session_id → 该会话的 task_id（按创建顺序）。有了它，pending_clarification
+        # 只需扫本会话，既避免全表遍历，也不会再迭代一个别的会话正在插入的字典。
+        self._session_tasks: dict[str, list[str]] = {}
+
+        # 临时监听器：HTTP 层在跑一轮任务时临时订阅，SSE 推给客户端。
+        # 与 _listeners 的差别：这里只对**本进程正在跑的这一轮**感兴趣，块退出就清。
+        # 锁内只做列表拷贝，不调用户代码——避免订阅方慢阻塞状态机。
+        self._ephemeral_lock = threading.Lock()
+        self._ephemeral: list[TaskListener] = []
+
+    # ================================================================ 任务注册表
+
+    def _slot(self, task_id: str) -> _TaskSlot:
+        with self._registry_lock:
+            slot = self._slots.get(task_id)
+        if slot is None:
+            raise TaskStateError(f"未知任务：{task_id}")
+        return slot
 
     # ================================================================ 对外接口
 
     def create_task(self, content: str, *, session_id: str | None = None) -> Task:
         """第零步：建任务、建窗、写入系统提示词与用户原文。"""
         task = Task.create(content, session_id=session_id or new_session_id())
-        self._tasks[task.task_id] = task
-        self._windows[task.task_id] = self.context.create_window(task)
-        self._tool_calls[task.task_id] = 0
-        self._revalidations[task.task_id] = 0
-        self._retries[task.task_id] = 0
+        # 建窗要装配系统提示词，放在锁外——锁内只允许字典操作
+        slot = _TaskSlot(task=task, window=self.context.create_window(task))
+        with self._registry_lock:
+            self._slots[task.task_id] = slot
+            self._session_tasks.setdefault(task.session_id, []).append(task.task_id)
         self._emit(
             EventKind.TASK_CREATED,
             task,
@@ -132,24 +181,29 @@ class TaskManager:
         return task
 
     def task(self, task_id: str) -> Task:
-        task = self._tasks.get(task_id)
-        if task is None:
-            raise TaskStateError(f"未知任务：{task_id}")
-        return task
+        return self._slot(task_id).task
 
     def window(self, task_id: str) -> ContextWindow:
-        self.task(task_id)
-        return self._windows[task_id]
+        return self._slot(task_id).window
 
     def pending_clarification(self, session_id: str) -> Task | None:
         """本会话里正等待澄清的任务（正常最多一个）。
 
         前端靠它判断"这一轮输入是新问题，还是上一轮追问的答案"——控制台与 HTTP 层都需要
         这个判断，所以放在内核而不是各自实现一遍。
+
+        先在锁内把本会话的槽拷成一个列表，再到锁外读状态：锁的持有时间与本会话任务数
+        成正比，且不会与别的会话的 ``create_task`` 撞上"字典在迭代中改变了大小"。
         """
-        for task in reversed(self._tasks.values()):
-            if task.session_id == session_id and task.status is TaskStatus.CLARIFYING:
-                return task
+        with self._registry_lock:
+            slots = [
+                self._slots[task_id]
+                for task_id in self._session_tasks.get(session_id, ())
+                if task_id in self._slots
+            ]
+        for slot in reversed(slots):
+            if slot.task.status is TaskStatus.CLARIFYING:
+                return slot.task
         return None
 
     def run(self, task_id: str) -> Task:
@@ -168,10 +222,11 @@ class TaskManager:
 
     def provide_clarification(self, task_id: str, supplement: str) -> Task:
         """用户补充信息后回到意图识别（require.md 的 clarifying → intenting）。"""
-        task = self.task(task_id)
+        slot = self._slot(task_id)
+        task = slot.task
         if task.status is not TaskStatus.CLARIFYING:
             raise TaskStateError(f"任务 {task_id} 当前状态是 {task.status.value}，不在等待澄清")
-        window = self._windows[task_id]
+        window = slot.window
         self.context.amend_user_request(window, supplement)
         self.context.update_summary(window, output=None)
         self._transition(task, TaskStatus.INTENTING, note="用户补充信息后重新识别意图")
@@ -191,21 +246,41 @@ class TaskManager:
         kind: EventKind,
         task: Task,
         *,
-        summary: str,
+        summary: str = "",
         payload: dict[str, Any] | None = None,
     ) -> None:
-        emit_all(
-            self._listeners,
-            TaskEvent(
-                kind=kind,
-                task_id=task.task_id,
-                session_id=task.session_id,
-                status=task.status,
-                summary=summary,
-                payload=payload or {},
-                window=self._windows.get(task.task_id),
-            ),
+        """状态机的发事件出口：永久 listener + 临时 listener 一起通知。"""
+        with self._registry_lock:
+            slot = self._slots.get(task.task_id)
+        event = TaskEvent(
+            kind=kind,
+            task_id=task.task_id,
+            session_id=task.session_id,
+            status=task.status,
+            summary=summary,
+            payload=payload or {},
+            window=slot.window if slot is not None else None,
         )
+        emit_all(self._listeners, event)
+        # 临时 listener 在锁外调用——订阅方是 SSE 队列推送，慢的话会丢事件，
+        # 但不能让订阅方阻塞状态机的推进
+        with self._ephemeral_lock:
+            ephemerals = list(self._ephemeral)
+        for listener in ephemerals:
+            try:
+                listener(event)
+            except Exception:
+                _logger.exception("临时监听器处理 %s 失败", kind.value)
+
+    # ================================================================ 临时订阅
+
+    def add_ephemeral(self, listener: TaskListener) -> None:
+        with self._ephemeral_lock:
+            self._ephemeral.append(listener)
+
+    def remove_ephemeral(self, listener: TaskListener) -> None:
+        with self._ephemeral_lock, contextlib.suppress(ValueError):
+            self._ephemeral.remove(listener)
 
     def _transition(self, task: Task, target: TaskStatus, *, note: str = "") -> None:
         """状态机推进的**唯一**入口：转移 + 发事件。
@@ -233,7 +308,7 @@ class TaskManager:
     # ================================================================ 推进
 
     def _step(self, task: Task) -> None:
-        window = self._windows[task.task_id]
+        window = self._slot(task.task_id).window
         try:
             if task.status is TaskStatus.CREATED:
                 self._transition(task, TaskStatus.INTENTING)
@@ -268,12 +343,12 @@ class TaskManager:
             self._terminate(task, TaskStatus.FAILED, exc.message)
             return
 
-        used = self._retries[task.task_id] + 1
+        used = self._slot(task.task_id).retries + 1
         limit = self.settings.task.max_retry
         if used > limit:
             self._terminate(task, TaskStatus.FAILED, f"重试 {limit} 次后仍失败：{exc.message}")
             return
-        self._retries[task.task_id] = used
+        self._slot(task.task_id).retries = used
         self._transition(
             task,
             TaskStatus.RETRYING,
@@ -282,8 +357,11 @@ class TaskManager:
 
     def _run_retry(self, task: Task, window: ContextWindow) -> None:  # noqa: ARG002 - 阶段签名一致
         """指数退避后回到执行阶段，从未完成的步骤继续。"""
-        attempt = self._retries[task.task_id]
+        attempt = self._slot(task.task_id).retries
         delay = self.settings.task.retry_backoff_seconds * (2 ** (attempt - 1))
+        # 单次退避封顶，避免 attempt 很大时 sleep 几小时把 worker 线程吊死
+        cap = self.settings.task.retry_backoff_cap_seconds
+        delay = min(delay, cap)
         self._sleep(delay)
         self._transition(task, TaskStatus.EXECUTING, note=f"退避 {delay}s 后重试")
 
@@ -359,16 +437,31 @@ class TaskManager:
         self._transition(task, TaskStatus.VALIDATING, note="所有步骤执行完毕")
 
     def _run_operation(self, task: Task, window: ContextWindow, operation: Operation) -> None:
+        """单步内的「模型 ↔ 工具」循环。
+
+        **最后一轮强制收敛**：不再把工具清单发给模型，并在指令里明说"这是最后一轮，
+        基于已有结果直接给结论"。否则模型很容易一路换着关键字试到轮次耗尽，明明手上
+        已经有数据，任务却熔断成 ABORTED、用户什么都拿不到。
+        """
         max_rounds = self.settings.task.max_rounds_per_step
-        for _round in range(max_rounds):
-            messages = self.context.build_execute_messages(window, operation)
+        for round_index in range(max_rounds):
+            final_round = round_index == max_rounds - 1
+            messages = self.context.build_execute_messages(
+                window, operation, final_round=final_round
+            )
             response = self.llm.chat(
                 LLMRequest(
                     messages=messages,
-                    tools=self.tools.openai_schemas(),
+                    tools=None if final_round else self.tools.openai_schemas(),
                     stage="execute",
                 )
             )
+            if final_round and response.wants_tool:
+                # 没给工具还硬要调，说明模型不配合；有正文就当结论，否则只能熔断
+                if not response.content:
+                    break
+                response = response.model_copy(update={"tool_calls": []})
+
             if not response.wants_tool:
                 operation.result = response.content
                 operation.status = OperationStatus.SUCCEEDED
@@ -426,11 +519,12 @@ class TaskManager:
         )
 
     def _spend_tool_call(self, task: Task) -> None:
-        used = self._tool_calls[task.task_id] + 1
+        slot = self._slot(task.task_id)
+        used = slot.tool_calls + 1
         limit = self.settings.task.max_tool_calls
         if used > limit:
             raise _CircuitBreakError(f"工具调用次数超过上限 {limit}")
-        self._tool_calls[task.task_id] = used
+        slot.tool_calls = used
 
     def _tool_context(self, task: Task, window: ContextWindow) -> ToolContext:
         return ToolContext(
@@ -452,11 +546,11 @@ class TaskManager:
             self._transition(task, TaskStatus.COMPLETED, note="校验通过")
             return
 
-        used = self._revalidations[task.task_id] + 1
+        used = self._slot(task.task_id).revalidations + 1
         limit = self.settings.task.max_revalidate
         if used > limit:
             raise _CircuitBreakError(f"校验连续 {limit} 次未通过：{decision.reason}")
-        self._revalidations[task.task_id] = used
+        self._slot(task.task_id).revalidations = used
 
         # 补充执行：追加一个新步骤，执行循环才有事可做
         operations = [
@@ -488,7 +582,7 @@ class TaskManager:
         TASK_FINISHED 事件，日志与落库都从事件上读 output；若先转移，它们看到的就是
         一个还没填的 None。
         """
-        window = self._windows[task.task_id]
+        window = self._slot(task.task_id).window
         if task.status is TaskStatus.CREATED and target is not TaskStatus.CANCELED:
             self._transition(task, TaskStatus.INTENTING)
         if not task.status.can_transition_to(target):

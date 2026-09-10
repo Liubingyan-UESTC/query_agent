@@ -13,6 +13,7 @@ require.md 把记忆分成两类：
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from agent.context import ContextWindow
@@ -86,22 +87,32 @@ class WorkingMemory:
 
 
 class MemoryManager:
-    """会话记忆的门面：``working(session_id)`` 取工作记忆，``knowledge`` 取外部知识。"""
+    """会话记忆的门面：``working(session_id)`` 取工作记忆，``knowledge`` 取外部知识。
+
+    **并发**：``_sessions`` 是跨会话共享的，所以建桶与列举都在锁内。桶**内部**
+    （:class:`WorkingMemory`）不加锁——同一会话的任务由 HTTP 层串行化，只有一个线程
+    会碰到同一个桶。
+    """
 
     def __init__(self, knowledge: KnowledgeMemory, *, max_tasks: int = 20) -> None:
         self.knowledge = knowledge
         self._max_tasks = max_tasks
+        self._lock = threading.Lock()
         self._sessions: dict[str, WorkingMemory] = {}
 
     def working(self, session_id: str) -> WorkingMemory:
-        memory = self._sessions.get(session_id)
-        if memory is None:
-            memory = WorkingMemory(session_id, max_tasks=self._max_tasks)
-            self._sessions[session_id] = memory
-        return memory
+        # 锁内完成"查不到就建"：不加锁的话，同一会话首次并发访问会各建一个桶，
+        # 先归档的那次记忆凭空丢失
+        with self._lock:
+            memory = self._sessions.get(session_id)
+            if memory is None:
+                memory = WorkingMemory(session_id, max_tasks=self._max_tasks)
+                self._sessions[session_id] = memory
+            return memory
 
     def archive(self, window: ContextWindow) -> None:
         self.working(window.session_id).archive(window)
 
     def sessions(self) -> list[str]:
-        return sorted(self._sessions)
+        with self._lock:
+            return sorted(self._sessions)

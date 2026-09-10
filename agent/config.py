@@ -110,6 +110,17 @@ class LLMSettings(_GroupSettings):
     # 显式指定走 Mock；未配置 api_key 时也会自动回落，见 use_mock_client()
     use_mock: bool = False
 
+    max_concurrency: int = Field(default=8, ge=1)
+    """全进程同时在途的模型调用数上限。
+
+    会话之间并发之后，N 个并发请求就是 N 个并发模型调用，很容易撞供应商的 429。
+    而 429 是可重试的，退避会让线程挂更久、把情况推得更糟。所以在客户端这一层设闸：
+    宁可让请求在本地排队等一下，也不要把配额打爆后集体退避。
+
+    这个值应当略小于供应商给的并发额度，与 HTTP 层的线程数无关——线程可以多开，
+    因为它们大部分时间在等这个闸门或等网络。
+    """
+
     @classmethod
     def from_env(cls, env_file: Path | None) -> Self:
         """必须显式下传 ``env_file`` 给 primary，否则 ``default_factory`` 会绕开它。"""
@@ -221,15 +232,25 @@ class TaskSettings(_GroupSettings):
     max_revalidate: int = Field(default=2, ge=0)
     """校验不通过后允许回到执行阶段补充的次数。"""
 
-    max_retry: int = Field(default=1, ge=0)
+    max_retry: int = Field(default=3, ge=0)
     """执行阶段遇到可重试错误（如限流）时，任务级重试的次数。
 
     与 ``LLM_MAX_RETRIES`` 是两个层级：后者重试的是**单次 HTTP 调用**，这里重试的是
-    **整个步骤**（重新装配提示词再问一遍）。默认给 1，避免两层相乘把耗时放大。
+    **整个步骤**（重新装配提示词再问一遍）。
+
+    默认 3：429 是供应商用滑动窗口限的，1 次重试 + 1s 退避基本会立刻撞同墙；
+    给到 3 次配合指数退避（1s/2s/4s，最长 60s）才能等到窗口滑出去。
     """
 
-    retry_backoff_seconds: float = Field(default=1.0, ge=0)
-    """任务级重试的退避基数，第 n 次重试等待 ``base * 2^(n-1)`` 秒。"""
+    retry_backoff_seconds: float = Field(default=5.0, ge=0)
+    """任务级重试的退避基数，第 n 次重试等待 ``base * 2^(n-1)`` 秒（封顶 60s）。
+
+    实测 MiniMax Token Plan 429 的恢复窗口在 10-30s 之间，base=5、第 n 次退避 5/10/20/40s
+    才能稳稳跨过去；1s 退避相当于没用。
+    """
+
+    retry_backoff_cap_seconds: float = Field(default=60.0, ge=1)
+    """单次退避的上限。第 n 次理论退避 = ``base * 2^(n-1)``，超过此值截断。"""
 
 
 # ============================================================ 网络服务
@@ -247,6 +268,16 @@ class ServerSettings(_GroupSettings):
     """会话凭证的 Cookie 名。"""
 
     session_cookie_max_age: int = Field(default=7 * 24 * 3600, ge=0)
+
+    max_queue_per_session: int = Field(default=8, ge=1)
+    """同一会话排队上限。
+
+    超出会返回 ``503 Service Unavailable`` + ``Retry-After`` 头。不设这个会让会话锁
+    表里无限堆积——50 个用户同时请求，每个等 4 分钟，session 锁里就有 50 个挂着
+    的会话，任何追问再发一次就排到 241s 后。
+
+    8 是经验值：一个会话在正常节奏下不会被同一用户塞 8 个追问。
+    """
 
     inline_result_max_chars: int = Field(default=4000, ge=0)
     """工具结果内联进 ``tool_calls.result_json`` 的字符上限，超出改存文件。"""

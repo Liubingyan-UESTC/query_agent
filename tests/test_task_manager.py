@@ -319,8 +319,45 @@ class TestExecuteStage:
         assert task.status is TaskStatus.FAILED
         assert "未注册的工具" in task.summary.output
 
+    def test_final_round_forces_a_conclusion_instead_of_aborting(self, make_manager):
+        """模型一路换关键字试到最后一轮时，应当用手上的数据作答，而不是熔断。"""
+        manager = make_manager(
+            [
+                intent("query"),
+                plan(("检索", "search_tool")),
+                tool_call("search_tool", call_id="c1", keyword="order-service"),
+                tool_call("search_tool", call_id="c2", keyword="ERROR"),
+                # 第 3 轮是最后一轮：编排层不再发工具清单
+                MockLLMClient.reply("共 2 条 order-service 的 ERROR 日志"),
+                validate(output="共 2 条"),
+            ],
+            max_rounds_per_step=3,
+        )
+        task = manager.run(manager.create_task("查 order-service 的错误", session_id="s1").task_id)
+
+        assert task.status is TaskStatus.COMPLETED
+        assert task.summary.operations[0].result == "共 2 条 order-service 的 ERROR 日志"
+
+    def test_final_round_carries_no_tools(self, make_manager):
+        manager = make_manager(
+            [
+                intent("query"),
+                plan(("检索", "search_tool")),
+                tool_call("search_tool", call_id="c1", keyword="ERROR"),
+                MockLLMClient.reply("结论"),
+                validate(),
+            ],
+            max_rounds_per_step=2,
+        )
+        manager.run(manager.create_task("查日志", session_id="s1").task_id)
+
+        execute_calls = [c for c in manager.llm.calls if c.stage == "execute"]
+        assert execute_calls[0].tools  # 前面的轮次照常给工具
+        assert execute_calls[-1].tools is None  # 最后一轮不给
+        assert "不要再调用工具" in execute_calls[-1].messages[-1].content
+
     def test_step_round_budget_aborts(self, make_manager):
-        """模型在一个步骤里反复调工具却不给结论 → 熔断。"""
+        """连最后一轮的收敛指令都不听（还在硬调工具且没有正文）→ 熔断。"""
         manager = make_manager(
             [
                 intent("query"),

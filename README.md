@@ -69,6 +69,9 @@ python manage.py migrate            # 建 SQLite 四张表（data/agent.sqlite3�
 python manage.py runserver 7080
 ```
 
+> 生产用 `gunicorn -w 1 --threads 16 server.wsgi`。**worker 只能是 1**，原因见
+> [并发](#并发)。
+
 ```bash
 # 第一次不带凭证：响应头/Cookie/body 三处都会带回新的 session_id
 curl -si localhost:7080/api/chat -H 'Content-Type: application/json' \
@@ -81,6 +84,10 @@ curl -s localhost:7080/api/chat -H "X-Session-Id: $SID" \
 
 curl -s localhost:7080/api/history -H "X-Session-Id: $SID"
 curl -s localhost:7080/api/health
+
+# 流式版（看任务进度）：每条状态变化、工具调用、终态都立刻推过来
+curl -N -s localhost:7080/api/chat/stream -H "X-Session-Id: $SID" \
+     -H 'Content-Type: application/json' -d '{"message":"查 ERROR 日志"}'
 ```
 
 用 Cookie 也一样（浏览器 / `curl -c/-b` 自动带）：
@@ -139,7 +146,7 @@ knowledge} → task_manager → {cli, server}`。**`agent/` 不 import django**�
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `search_tool` | `keyword`、`limit` | 关键字在日志所有字段上做大小写不敏感子串匹配；空串返回全部 |
+| `search_tool` | `keyword`、`limit` | 关键字在日志所有字段上做大小写不敏感子串匹配；**空格分隔的多个词是 AND**（`order-service ERROR` = 该服务的错误日志）；空串返回全部 |
 | `analysis_tool` | `tool_call_id`、`group_by`、`metric`、`field`、`top` | 读黑板上某次检索的结果做分组统计（count / sum / avg / max / min） |
 | `fetch_tool_result` | `tool_call_id` | 取回某次调用的全量结果（内部工具，不落黑板） |
 
@@ -167,6 +174,54 @@ knowledge} → task_manager → {cli, server}`。**`agent/` 不 import django**�
 | `GET` | `/api/history` | 本会话的任务与消息（读 SQLite，不依赖进程内存） |
 | `GET` | `/api/tasks/<task_id>` | 单任务详情：summary 快照 + 消息 + 工具调用（只能看本会话的） |
 | `GET` | `/api/health` | 存活探测 + 当前实际装配的模型（真实还是 Mock）与工具清单 |
+
+### 流式响应：`/api/chat/stream`
+
+走 SSE（Server-Sent Events）协议，body 与 `/api/chat` 相同。任务在**后台线程**跑，主线程
+从队列里拉事件、按到达顺序推给客户端——意图/规划/工具/校验四个阶段一发生就推，用户不必
+等整轮跑完（MiniMax-M3 实测约 12s 内就能看到"正在识别意图"）。
+
+**事件格式**：每条任务事件两行（`event:` + `data:`），事件之间空一行：
+
+```
+event: task_created
+data: {"kind":"task_created","task_id":"task_xxx","session_id":"sess_xxx","status":"created","summary":"...","payload":{...},"at":"..."}
+
+event: status_changed
+data: {"kind":"status_changed","task_id":"task_xxx","status":"intenting","summary":"状态转移 created→intenting","payload":{"from":"created","to":"intenting","note":""},"at":"..."}
+
+event: tool_called
+data: {"kind":"tool_called","status":"executing","payload":{"tool_name":"search_tool","arguments":{...},"ok":true,"call_id":"call_xxx"},...}
+
+event: task_finished
+data: {"kind":"task_finished","status":"completed","payload":{"output":"...","intent":"query"},...}
+```
+
+`kind` 取值：`task_created` / `status_changed` / `tool_called` / `task_finished`。
+`status` 取值见 `agent.enums.TaskStatus`。
+
+**心跳**：连续 15s 无事件自动推 `: heartbeat\n\n`，防止被 nginx/CDN 当空闲连接掐掉。
+
+**错误处理**：流已开就回不了 HTTP 503。真正的失败用 `event: error` 推送（如排队已满、
+会话层 AgentError）。客户端必须把 `event: error` 当作请求失败处理。
+
+**断连处理**：客户端断开时本连接关闭，**后台线程继续跑**到结束——避免引入"跨线程改任务
+状态"的竞态。任务结束后通过 `TASK_FINISHED` 事件告知结果（这条也可能被丢），所以**断线
+重连后客户端应当去 `/api/tasks/<id>` 拿最终快照**。
+
+**客户端实现**：
+
+```js
+// 浏览器
+const es = new EventSource("/api/chat/stream", {withCredentials: true});
+es.addEventListener("status_changed", e => updateUI(JSON.parse(e.data)));
+es.addEventListener("task_finished", e => { showResult(JSON.parse(e.data)); es.close(); });
+es.addEventListener("error", e => showError());
+
+// CLI
+curl -N -s localhost:7080/api/chat/stream -H 'X-Session-Id: sess_xxx' \
+     -H 'Content-Type: application/json' -d '{"message":"查 ERROR 日志"}'
+```
 
 ### 会话凭证
 
@@ -206,7 +261,63 @@ sqlite3 data/agent.sqlite3 'select role, tool_call_id, substr(content,1,40) from
 ```
 
 **重启不恢复**：任务与黑板只活在内存里。重启后历史照样能查，但「正等着澄清」的任务会丢，
-用户重新提问即可。并发上，`run_turn` 用一把进程锁把任务执行串行化——本地测试服务的取舍。
+用户重新提问即可。
+
+---
+
+## 并发
+
+**会话之间并发，会话之内串行。**
+
+并发的天然单位是会话：不同会话的黑板、工作记忆、任务表互不相干，没有理由互等；而同一
+会话的追问依赖上一轮结果（澄清态、`related_task_ids`、工作记忆都是顺序语义），并发推进
+只会让上下文错乱。所以 `run_turn` 按 session_id 加锁（`server/api/runtime.py`），同会话的
+第二个请求**阻塞排队**直到前一个跑完。
+
+锁表按引用计数回收：会话 id 由客户端提供，只增不减就是一条稳定的内存泄漏。
+
+### 部署：单进程多线程
+
+```bash
+gunicorn -w 1 --threads 16 server.wsgi        # 生产
+python manage.py runserver 7080               # 开发（Django 自带多线程）
+```
+
+**不要加 worker。** `TaskManager` 是 per-process 单例，任务表与黑板都在进程内存里。
+`-w 4` 会得到 4 个互不相识的 manager——用户第一轮进 worker 1 建了澄清任务，第二轮被路由到
+worker 3 就找不到它，上下文凭空消失。这是正确性问题，不是性能问题。要横向扩容，得先把
+任务状态搬去 Redis 之类的外部存储。
+
+单进程不吃亏：瓶颈是 LLM 的网络等待，线程绝大部分时间在等 I/O，GIL 几乎不影响吞吐。
+
+### 三道闸门
+
+| 位置 | 机制 | 作用 |
+|---|---|---|
+| `server/api/runtime.py` | 每会话一把 `Lock` | 同会话串行，跨会话并行 |
+| `agent/llm/limiter.py` | `BoundedSemaphore(LLM_MAX_CONCURRENCY)` | 限制在途模型调用数，别把供应商配额打爆 |
+| `agent/task_manager.py` | `_registry_lock` | 保护跨会话共享的任务注册表 |
+
+模型闸门装在**重试里面**（`Resilient(Gated(端点))`）：退避 sleep 不占并发许可，否则一个
+正在退避 8s 的请求会白占一个并发位。降级链上所有端点共享同一个闸门，不然上限会变成
+「端点数 × N」。
+
+### SQLite 的三个参数
+
+`server/settings.py` 里三个都不能省：
+
+- `journal_mode=WAL`——默认的 rollback journal 下写事务会阻塞**所有读**，一次 `/api/chat`
+  落库就能卡住并发的 `/api/history`；
+- `timeout=20`——拿不到写锁时等而不是立刻抛 `database is locked`；
+- `transaction_mode=IMMEDIATE`——BEGIN 时就取写锁。默认的 DEFERRED 会在事务中途从读升级
+  为写，两个事务同时升级必然有一方拿不到锁且**无法退避**（已经读过了）。`DbListener`
+  每个事件都是「先读后写」，正是这个形态。
+
+没设 `ATOMIC_REQUESTS`：那会把写事务拉长到整个请求、包住几十秒的 LLM 调用，单写者的
+SQLite 会被一个慢任务彻底堵死。
+
+WAL 下 SQLite 仍是**单写者**，这是当前架构的写入天花板。真要更高并发就换 PostgreSQL——
+只需改 `DATABASES`，ORM 代码不用动。
 
 ---
 
@@ -262,7 +373,7 @@ aborted 的边，实现宁可换个语义相近的终态，也不绕过状态机
 ## 开发
 
 ```bash
-python -m pytest -q                 # 374 个测试，全部离线（不触网、不碰真实模型）
+python -m pytest -q                 # 382 个测试，全部离线（不触网、不碰真实模型）
 python -m pytest -q --cov           # 内核覆盖率 ~96%
 ruff check . && ruff format --check .
 mypy agent                          # strict（只管内核，见 pyproject 里的说明）

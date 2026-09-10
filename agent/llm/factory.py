@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from agent.config import AppSettings, LLMProfile, LLMSettings
 from agent.llm.base import BaseLLMClient
+from agent.llm.limiter import ConcurrencyGate, GatedLLMClient
 from agent.llm.mock_client import MockLLMClient
 from agent.llm.openai_client import OpenAICompatClient, ResilientLLMClient
 
@@ -27,11 +28,15 @@ def build_llm_client(
     """按配置构建客户端。
 
     ``client_factory`` 是测试注入点：可以在不触网的情况下验证降级链的行为。
+
+    装配顺序是 ``Resilient(Gated(端点))``：闸门在重试**里面**，所以退避 sleep 不占
+    并发许可。全链路共享一个 gate，见 :class:`~agent.llm.limiter.ConcurrencyGate`。
     """
     llm = settings.llm if isinstance(settings, AppSettings) else settings
     if llm.use_mock_client():
         return mock if mock is not None else MockLLMClient()
 
     factory: ClientFactory = client_factory or OpenAICompatClient
-    clients = [factory(profile) for profile in llm.profile_chain()]
+    gate = ConcurrencyGate(llm.max_concurrency)
+    clients = [GatedLLMClient(factory(profile), gate) for profile in llm.profile_chain()]
     return ResilientLLMClient(clients, max_retries=llm.primary.max_retries)
